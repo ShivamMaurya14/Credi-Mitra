@@ -30,6 +30,7 @@ load_dotenv()
 # ──────────────────────────────────────────────
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+TAVILY_API_KEY = os.environ.get("tavily_api_key", os.environ.get("TAVILY_API_KEY", ""))
 
 # ──────────────────────────────────────────────
 # Tool 1 — Extract PDF Data
@@ -132,63 +133,72 @@ def crawl_web_for_litigation(company_name: str) -> str:
 
     company_name = company_name.strip()
 
-    # ── Simulate ambiguity detection ──
-    # In production, this would come from actual web search results
-    ambiguous_names = ["infosys", "tata", "reliance", "bajaj", "mahindra", "adani", "birla", "godrej"]
-    is_ambiguous = any(keyword in company_name.lower() for keyword in ambiguous_names)
+    # ── Verify name clarity ──
+    # Check if the name is too short or looks like a placeholder
+    is_ambiguous = len(company_name) < 3 or company_name.lower() in ["company", "sample", "test", "business"]
 
     if is_ambiguous:
-        # HUMAN-IN-THE-LOOP: Interrupt and ask the user for clarification
+        # HUMAN-IN-THE-LOOP: Interrupt and ask for a valid company name
         clarification = interrupt({
             "question": (
-                f"⚠️ **Ambiguous Company Name Detected**\n\n"
-                f"While searching for **'{company_name}'**, I found multiple entities "
-                f"with similar names in NCLT filings and public databases:\n\n"
-                f"1. **{company_name} Technologies Ltd.** — IT Services (Mumbai)\n"
-                f"2. **{company_name} Industrial Solutions Pvt. Ltd.** — Manufacturing (Pune)\n"
-                f"3. **{company_name} Finance & Leasing Co.** — NBFC (Delhi)\n\n"
-                f"Which company are you analyzing? Please reply with the number (1, 2, or 3) "
-                f"or provide the full legal entity name."
+                f"⚠️ **Incomplete Company Name Detected**\n\n"
+                f"The provided name **'{company_name}'** is too short or generic for a reliable web search. "
+                "Please provide the full legal name of the entity you wish to analyze."
             ),
-            "type": "clarification_needed"
+            "type": "ambiguity_check",
+            "company": company_name
         })
         # When resumed, `clarification` contains the user's answer
-        company_name = f"{company_name} (User clarified: {clarification})"
+        company_name = str(clarification).strip()
 
-    # ── Simulate web research results ──
-    import random
-    random.seed(hash(company_name) % 1000)
-    litigation_count = random.choice([0, 0, 0, 1, 2, 3])
-    sentiment_score = round(random.uniform(-0.3, 0.8), 2)
+    # ── Real Web Research via Tavily ──
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        
+        # Search for litigation and news
+        search_query = f"{company_name} litigation NCLT RBI regulatory news"
+        search_result = client.search(query=search_query, search_depth="advanced", max_results=5)
+        
+        news_headlines = []
+        for r in search_result.get("results", []):
+            news_headlines.append(f"{r['title']} ({r['url']})")
+            
+        # Sentiment logic based on keywords
+        news_text = " ".join(news_headlines).lower()
+        negative_keywords = ["litigation", "fraud", "scam", "lawsuit", "nclt", "penalty", "default"]
+        litigation_count = sum(1 for word in negative_keywords if word in news_text)
+        sentiment_score = 0.5 - (litigation_count * 0.2)
+        sentiment_score = max(-0.9, min(0.9, sentiment_score))
 
-    nclt_cases = []
-    if litigation_count > 0:
-        case_types = ["IBC Insolvency Petition", "Winding Up Petition", "Oppression & Mismanagement", "Scheme of Arrangement"]
-        for i in range(litigation_count):
+        nclt_cases = []
+        if "nclt" in news_text or "litigation" in news_text:
             nclt_cases.append({
-                "case_id": f"NCLT/{random.randint(2020,2025)}/{random.randint(100,999)}",
-                "type": random.choice(case_types),
-                "status": random.choice(["Pending", "Disposed", "Under Hearing"]),
-                "bench": random.choice(["Mumbai Bench", "Delhi Bench", "Chennai Bench"])
+                "case_id": "Detected via Search",
+                "type": "Probable Legal/Regulatory Matter",
+                "status": "Check Details",
+                "bench": "Refer to Search Results"
             })
 
-    news_headlines = [
-        f"{company_name} reports steady growth in Q3 FY25",
-        f"Sector outlook: RBI policies favorable for {company_name}'s industry",
-        f"{company_name} announces expansion plans in Tier-2 cities"
-    ]
-    if sentiment_score < 0:
-        news_headlines.append(f"Concerns raised over {company_name}'s debt-to-equity ratio")
+    except Exception as e:
+        # Professional fallback: Report service unavailability
+        news_headlines = []
+        litigation_count = 0
+        sentiment_score = 0.0
+        nclt_cases = []
+        status = "warning"
+        message = f"Web research service (Tavily) currently unavailable: {str(e)}"
 
     result = {
-        "status": "success",
+        "status": "success" if 'status' not in locals() else "warning",
         "company_searched": company_name,
         "litigation_count": litigation_count,
         "nclt_cases": nclt_cases,
-        "news_sentiment_score": sentiment_score,
+        "news_sentiment_score": round(sentiment_score, 2),
         "news_headlines": news_headlines,
-        "rbi_regulatory_actions": "None found",
-        "source": "Simulated (Tavily/NCLT Public Database)"
+        "rbi_regulatory_actions": "Searched",
+        "source": "Tavily AI Search Engine",
+        "notes": message if 'message' in locals() else "Live search completed successfully."
     }
     return json.dumps(result, indent=2)
 
@@ -240,11 +250,9 @@ def extract_numerical_features(
     key_numbers = pdf_data.get("key_numbers_extracted", {})
 
     # ── Feature 1: Company Age ──
-    # Typically from Application Form or Annual Report
     if "Company_Age" in key_numbers:
         features["Company_Age"] = key_numbers["Company_Age"]
     else:
-        features["Company_Age"] = 10  # Reasonable default
         missing_features.append("Company_Age")
 
     # ── Feature 2: CIBIL Score ──
@@ -279,7 +287,7 @@ def extract_numerical_features(
 
     # ── HUMAN-IN-THE-LOOP: Ask for missing critical features ──
     critical_missing = [f for f in missing_features if f in [
-        "CIBIL_Commercial_Score", "GSTR_Declared_Revenue_Cr", "Bank_Statement_Inflow_Cr"
+        "CIBIL_Commercial_Score", "GSTR_Declared_Revenue_Cr", "Bank_Statement_Inflow_Cr", "Company_Age"
     ]]
 
     if critical_missing:
@@ -287,7 +295,8 @@ def extract_numerical_features(
         missing_descriptions = {
             "CIBIL_Commercial_Score": "CIBIL Commercial Score (typically 300–900)",
             "GSTR_Declared_Revenue_Cr": "GSTR Declared Revenue in Crores (e.g., 120.5)",
-            "Bank_Statement_Inflow_Cr": "Bank Statement Total Inflow in Crores (e.g., 115.0)"
+            "Bank_Statement_Inflow_Cr": "Bank Statement Total Inflow in Crores (e.g., 115.0)",
+            "Company_Age": "Company Age in Years (e.g., 15)"
         }
         question_parts = []
         for f in critical_missing:
@@ -299,7 +308,7 @@ def extract_numerical_features(
                 f"I could not find the following critical values in the uploaded documents:\n\n"
                 + "\n".join(question_parts) + "\n\n"
                 f"Please provide these values. You can reply like:\n"
-                f"`CIBIL: 750, Revenue: 120.5, Inflow: 115.0`"
+                f"`CIBIL: 750, Revenue: 120.5, Age: 12`"
             ),
             "type": "missing_data",
             "missing_fields": critical_missing
