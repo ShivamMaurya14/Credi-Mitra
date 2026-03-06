@@ -27,9 +27,7 @@
 
 ## 📖 About
 
-**CREDI-MITRA** is an enterprise-grade, AI-orchestrated credit underwriting platform. It replaces traditional rigid pipelines with a **ReAct LLM Orchestrator** — a Llama 3.1 model that dynamically reasons, plans, and calls specialized tools to perform end-to-end credit appraisal.
-
-The system ingests financial documents, crawls the web for litigation & news, runs a pre-trained ML model for credit scoring, and produces a professional **Credit Appraisal Memorandum (CAM)** — all while keeping a human analyst in the loop for ambiguous decisions.
+**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). The solution ingests multi-source data (Databricks), performs deep "web-scale" secondary research, and synthesizes primary due diligence into a final recommendation (ML based) on whether to lend, what the limit should be, and at what risk premium.
 
 <br/>
 
