@@ -21,8 +21,6 @@
 
 **CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). The solution ingests multi-source unstructured document data (PDFs via pypdf), performs deep "web-scale" secondary research using web scraping (DuckDuckGo & BeautifulSoup), and synthesizes primary due diligence into a final recommendation using a pre-trained XGBoost Machine Learning model on whether to lend, what the limit should be, and at what risk premium.
 
-<br/>
-
 > **💡 Core Innovation:** Instead of a fixed pipeline (A→B→C→D→E), an LLM Agent dynamically decides what to do next, asks the analyst for help when data is ambiguous, and shows every intermediate step transparently in a chat interface.
 
 <br/>
@@ -33,50 +31,51 @@
 
 ## 🏗️ System Architecture
 
-<br/>
-
 <div align="center">
 
 ```mermaid
-graph TD;
-    %% Styling
-    classDef orchestrator fill:#667eea,stroke:#fff,stroke-width:2px,color:#fff,font-weight:bold;
-    classDef tools fill:#1e1e35,stroke:#4a4a75,stroke-width:2px,color:#a8edea;
-    classDef hitl fill:#4a1e35,stroke:#ff6b6b,stroke-width:2px,color:#ff9e9e,stroke-dasharray: 5 5;
-    classDef output fill:#141423,stroke:#667eea,stroke-width:2px,color:#fff,font-weight:bold;
-
+flowchart TD
+    %% Global Style
+    classDef default font-size:16px,padding:15px;
+    
     %% Nodes
-    A[🧠 LLM ORCHESTRATOR<br>Llama 3.1 • 8B • Groq<br>Thinks → Plans → Executes]:::orchestrator
+    A["🧠 <b>LLM ORCHESTRATOR</b><br/>Llama 3.1 • 8B • Groq<br/><i>Thinks → Plans → Executes</i>"]
     
-    subgraph Tool Suite
-        B([📄 extract_pdf_data]):::tools
-        C([🔍 crawl_web_for_litigation]):::tools
-        D([📊 extract_numerical_features]):::tools
-        E([🤖 run_xgboost_scorer<br>97% Accuracy]):::tools
+    subgraph ToolSuite ["<b>TOOL SUITE</b>"]
+        direction LR
+        B(["📄 extract_pdf_data"])
+        C(["🔍 crawl_web_for_litigation"])
+        D(["📊 extract_numerical_features"])
+        E(["🤖 run_xgboost_scorer"])
     end
     
-    subgraph UI/Analyst
-        H[[👤 HUMAN-IN-THE-LOOP<br>• Ambiguous company?<br>• Missing CIBIL? <br>• Missing Revenue?]]:::hitl
+    subgraph UI ["<b>HUMAN-IN-THE-LOOP</b>"]
+        H{{"👤 <b>ANALYST</b><br/>• Ambiguous company?<br/>• Missing CIBIL? <br/>• Missing Revenue?"}}
     end
 
-    F{📄 final_cam_report}:::output
+    F{{"📄 <b>final_cam_report</b>"}}
 
     %% Flow
-    A -->|Calls Tool| B
-    A -->|Calls Tool| C
-    A -->|Calls Tool| D
-    A -->|Calls Tool| E
+    A ==>|" Calls"| B
+    A ==>|" Calls"| C
+    A ==>|" Calls"| D
+    A ==>|" Calls"| E
     
-    C -.->|Pauses on ambiguity| H
-    D -.->|Pauses on missing data| H
-    H -.->|Resumes with Analyst input| A
+    C -.->|" Pauses on ambiguity"| H
+    D -.->|" Pauses on missing data"| H
+    H -.->|" Resumes with input"| A
     
-    B & C & D & E ==>|Synthesizes Data| F
+    B & C & D & E ===>|" Synthesizes Data"| F
+
+    %% Styling
+    style A fill:#667eea,stroke:#fff,stroke-width:3px,color:#fff,font-weight:bold
+    style ToolSuite fill:#1e1e35,stroke:#4a4a75,stroke-width:2px,color:#fff
+    style UI fill:#2a1b2e,stroke:#ff6b6b,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
+    style H fill:#4a1e35,stroke:#ff6b6b,stroke-width:2px,color:#fff
+    style F fill:#141423,stroke:#667eea,stroke-width:3px,color:#fff,font-weight:bold
 ```
 
 </div>
-
-<br/>
 
 ## ✨ Key Features
 
@@ -85,12 +84,6 @@ graph TD;
 *   **🌐 Multi-Source Data Ingestion:** Extracts data from uploaded PDFs (bank statements, GST) and performs web-scale secondary research (NCLT filings, news sentiment).
 *   **🤖 XGBoost Credit Scoring:** A custom ML model computes the probability of default, recommends an approved limit, and sets a dynamic interest rate based on risk premiums.
 *   **📄 Automated CAM Generation:** Synthesizes all gathered data, financial metrics, and ML decisions into a final, downloadable PDF Credit Appraisal Memorandum.
-
-<br/>
-
----
-
-<br/>
 
 ## 🤖 Machine Learning Engine
 
@@ -103,15 +96,7 @@ CREDI-MITRA uses a pre-trained **XGBoost Classifier** to evaluate credit risk, t
     2.  **Recommended Limit (₹)** (Scaled by CIBIL and inflows)
     3.  **Dynamic Interest Rate (%)** (Base Premium + Risk Premium)
 
-<br/>
-
----
-
-<br/>
-
 ## 🛠️ Tech Stack
-
-<br/>
 
 <div align="center">
 
@@ -132,7 +117,7 @@ CREDI-MITRA uses a pre-trained **XGBoost Classifier** to evaluate credit risk, t
 
 <br/>
 
-## � Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites
 
@@ -157,15 +142,7 @@ echo 'GROQ_MODEL=llama-3.1-8b-instant' >> .env
 streamlit run app.py
 ```
 
-<br/>
-
----
-
-<br/>
-
 ## 🎮 Usage Guide
-
-<br/>
 
 | Step | Action | Details |
 |:----:|:-------|:-------|
@@ -178,12 +155,6 @@ streamlit run app.py
 | **7** | ⏸️ Respond | Answer any clarification questions from the agent |
 | **8** | 📋 Review | Inspect each tool output in expandable panels |
 | **9** | 📄 Download | Export the final CAM report as PDF |
-
-<br/>
-
----
-
-<br/>
 
 ## 📁 Project Structure
 
@@ -206,12 +177,6 @@ CREDI-MITRA/
 ├── uploads/                        # Saved documents (CompanyName_AppNo/)
 └── README.md
 ```
-
-<br/>
-
----
-
-<br/>
 
 ## 🔮 Roadmap/Future Scope
 
