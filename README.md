@@ -180,12 +180,12 @@ CREDI-MITRA/
 └── README.md
 ```
 
-## 🔮 Roadmap/Future Scope
+## 🔮 Future scope
 
+- [ ] Multi-model support — Groq / Ollama (local) / Gemini
 - [ ] Live web search via Tavily API integration
 - [ ] Structured PDF parsing with LlamaParse
 - [ ] Enhanced ML — dynamic interest rates & rejection reasons
-- [ ] Multi-model support — Groq / Ollama (local) / Gemini
 - [ ] Compliance audit trail — persist agent logs
 - [ ] Voice-driven appraisal via LiveKit
 
