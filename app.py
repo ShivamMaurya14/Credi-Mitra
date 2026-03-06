@@ -1,158 +1,451 @@
+"""
+CREDI-MITRA Streamlit Application — LLM Agent Chat Interface
+
+Features:
+- Continuous chat interface with st.chat_message
+- Intermediate tool visibility (every tool call shown in expandable sections)
+- Human-in-the-Loop via LangGraph interrupt / Command(resume=...)
+- Session state memory for conversation persistence across reruns
+"""
+
 import streamlit as st
 import time
-import pandas as pd
-import numpy as np
+import json
+import uuid
 import os
 import io
 import re
+import pandas as pd
+import numpy as np
 from fpdf import FPDF
+from dotenv import load_dotenv
+from pypdf import PdfReader
+from langgraph.types import interrupt, Command
 
-# Set page configuration with a wide layout and a dark, professional theme
+load_dotenv()
+
+# Import the agent builder
+from agent_graph import build_agent
+
+# ──────────────────────────────────────────────
+# Page Configuration
+# ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="CREDI-MITRA - Next-Gen Corporate Credit Appraisal : Bridging the Intelligence Gap",
+    page_title="CREDI-MITRA — AI Credit Analyst Agent",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for UI enhancements (Dark mode / Financial theme)
-def local_css():
+
+# ──────────────────────────────────────────────
+# Custom CSS
+# ──────────────────────────────────────────────
+def apply_custom_css():
     st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@800&display=swap');
-        
-        /* Sleek background and text color adjustments */
-        .reportview-container {
-            background-color: #0E1117;
-            color: #FAFAFA;
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Inter:wght@400;500;600&display=swap');
+
+        /* Global */
+        .stApp {
+            font-family: 'Inter', sans-serif;
         }
-        /* Style for primary title */
+
+        /* Gradient Title */
         .main-title {
             font-family: 'Outfit', sans-serif;
-            background: linear-gradient(90deg, #1E90FF 0%, #00FF7F 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             text-align: center;
-            font-size: 5.5rem;
+            font-size: 4rem;
             font-weight: 800;
-            margin-bottom: 0rem;
+            margin-bottom: 0;
             line-height: 1.1;
-            padding-top: 1rem;
+            padding-top: 0.5rem;
             text-transform: uppercase;
+            letter-spacing: 2px;
         }
+
         .sub-title {
-            color: #A0AEC0;
+            background: linear-gradient(90deg, #a8edea 0%, #fed6e3 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
             text-align: center;
-            font-size: 2.2rem;
-            font-weight: 400;
-            margin-bottom: 3rem;
-            margin-top: 0.5rem;
+            font-size: 1.4rem;
+            font-weight: 500;
+            margin-bottom: 1.5rem;
+            margin-top: 0.3rem;
+            letter-spacing: 1px;
         }
-        /* Enhance metric containers */
+
+        /* Metric styling */
         [data-testid="stMetricValue"] {
-            font-size: 2.5rem;
-            color: #00FF7F;
+            font-size: 2.2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
         [data-testid="stMetricDelta"] {
-            font-size: 1.2rem;
+            font-size: 1rem;
         }
-        /* Buttons styling */
+
+        /* Button styling */
         .stButton>button {
-            width: 100%;
-            border-radius: 8px;
-            font-weight: bold;
-            transition: all 0.3s;
+            border-radius: 12px;
+            font-weight: 600;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid rgba(102, 126, 234, 0.3);
         }
         .stButton>button:hover {
-            border-color: #1E90FF;
-            color: #1E90FF;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
         }
-        /* Override primary button color to a professional blue */
         button[kind="primary"] {
-            background-color: #1E90FF !important;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
             color: white !important;
             border: none !important;
         }
         button[kind="primary"]:hover {
-            background-color: #0073e6 !important;
-            color: white !important;
+            background: linear-gradient(135deg, #5a6fd6 0%, #6a4299 100%) !important;
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4) !important;
         }
-        /* Increase chat text size */
+
+        /* Chat messages */
         [data-testid="stChatMessageContent"] {
-            font-size: 1.25rem !important;
+            font-size: 1.1rem !important;
+            line-height: 1.6 !important;
         }
         [data-testid="stChatMessageContent"] p {
-            font-size: 1.25rem !important;
+            font-size: 1.1rem !important;
+        }
+
+        /* Tool output expanders */
+        .tool-output {
+            border-left: 3px solid #667eea;
+            padding-left: 12px;
+            margin: 8px 0;
+            background: rgba(102, 126, 234, 0.05);
+            border-radius: 0 8px 8px 0;
+        }
+
+        /* Sidebar enhancements */
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, rgba(30,30,50,0.95) 0%, rgba(20,20,35,0.98) 100%);
+        }
+        [data-testid="stSidebar"] .stMarkdown h3 {
+            color: #a8edea;
+        }
+
+        /* Container borders */
+        [data-testid="stVerticalBlock"] > div:has(> [data-testid="stContainer"]) {
+            border-radius: 12px;
+        }
+
+        /* Status indicator */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .status-ready {
+            background: rgba(0, 255, 127, 0.15);
+            color: #00FF7F;
+            border: 1px solid rgba(0, 255, 127, 0.3);
+        }
+        .status-pending {
+            background: rgba(255, 165, 0, 0.15);
+            color: #FFA500;
+            border: 1px solid rgba(255, 165, 0, 0.3);
         }
     </style>
     """, unsafe_allow_html=True)
 
-# Call CSS
-local_css()
+apply_custom_css()
 
-# --- INITIALIZE SESSION STATE ---
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = 'login'
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
-if 'cam_generated' not in st.session_state:
-    st.session_state.cam_generated = False
-if 'cam_content' not in st.session_state:
-    st.session_state.cam_content = ""
-if 'docs_verified' not in st.session_state:
-    st.session_state.docs_verified = False
-if 'company_name' not in st.session_state:
-    st.session_state.company_name = ""
-if 'app_no' not in st.session_state:
-    st.session_state.app_no = ""
-if 'analyzed_company' not in st.session_state:
-    st.session_state.analyzed_company = ""
-if 'analysis_step' not in st.session_state:
-    st.session_state.analysis_step = 0
 
-# --- PAGE ROUTING FUNCTIONS ---
+# ──────────────────────────────────────────────
+# Session State Initialization
+# ──────────────────────────────────────────────
+def init_session_state():
+    defaults = {
+        "logged_in": False,
+        "current_page": "login",
+        "messages": [],           # Chat messages: {role, content, type?, tool_name?, tool_data?}
+        "docs_verified": False,
+        "company_name": "",
+        "app_no": "",
+        "pdf_extracted_text": "",
+        "manual_entry": "",
+        "cam_generated": False,
+        "cam_content": "",
+        "agent": None,
+        "thread_id": None,
+        "waiting_for_human": False,  # True when graph is interrupted
+        "interrupt_data": None,      # The interrupt payload
+        "agent_running": False,
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+init_session_state()
+
+
+# ──────────────────────────────────────────────
+# Utility Functions
+# ──────────────────────────────────────────────
 def switch_page(page_name):
     st.session_state.current_page = page_name
     st.rerun()
 
-# --- VIEW 1: THE LOGIN VIEW ---
+
+def add_message(role, content, **kwargs):
+    """Add a message to session state."""
+    msg = {"role": role, "content": content}
+    msg.update(kwargs)
+    st.session_state.messages.append(msg)
+
+
+def render_tool_output(tool_name, tool_data):
+    """Render a tool's output as an expandable section in the chat."""
+    icon_map = {
+        "extract_pdf_data": "📄",
+        "crawl_web_for_litigation": "🔍",
+        "extract_numerical_features": "📊",
+        "run_xgboost_scorer": "🤖",
+        "generate_cam_report": "📋",
+    }
+    icon = icon_map.get(tool_name, "🔧")
+
+    with st.expander(f"{icon} Tool Output: `{tool_name}`", expanded=True):
+        if isinstance(tool_data, str):
+            try:
+                parsed = json.loads(tool_data)
+                st.json(parsed)
+            except (json.JSONDecodeError, TypeError):
+                # Check if it looks like a CAM report (markdown)
+                if tool_data.strip().startswith("#"):
+                    st.markdown(tool_data)
+                else:
+                    st.code(tool_data, language="text")
+        elif isinstance(tool_data, dict):
+            st.json(tool_data)
+        else:
+            st.write(tool_data)
+
+
+def generate_cam_pdf(cam_text):
+    """Convert CAM markdown content into a professionally formatted PDF."""
+    cam_text = re.sub(r'[^\x00-\xff]', '', cam_text)
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # Title
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_text_color(102, 126, 234)
+    pdf.cell(0, 14, "CREDI-MITRA", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_font("Helvetica", "", 11)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 8, "AI-Powered Credit Intelligence", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.ln(4)
+    pdf.set_draw_color(102, 126, 234)
+    pdf.set_line_width(0.6)
+    pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+    pdf.ln(6)
+
+    for raw_line in cam_text.strip().splitlines():
+        line = raw_line.strip()
+        if not line:
+            pdf.ln(3)
+            continue
+        if line.startswith("####") or line.startswith("###") or line.startswith("##") or line.startswith("# "):
+            heading = line.lstrip("#").strip().replace("**", "")
+            pdf.set_font("Helvetica", "B", 13)
+            pdf.set_text_color(60, 80, 160)
+            pdf.multi_cell(0, 8, heading)
+            pdf.ln(2)
+        elif line == "---":
+            pdf.ln(2)
+            pdf.set_draw_color(180, 180, 180)
+            pdf.set_line_width(0.3)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(4)
+        elif line.startswith("- ") or line.startswith("* "):
+            text = line[2:].replace("**", "")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(50, 50, 50)
+            pdf.set_x(pdf.l_margin + 4)
+            pdf.multi_cell(pdf.w - pdf.l_margin - pdf.r_margin - 4, 6, "  " + text)
+            pdf.ln(1)
+        elif line.startswith("|"):
+            text = line.replace("**", "")
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(70, 70, 70)
+            pdf.multi_cell(0, 5, text)
+        else:
+            text = line.replace("**", "")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(50, 50, 50)
+            pdf.multi_cell(0, 6, text)
+            pdf.ln(1)
+
+    return bytes(pdf.output())
+
+
+# ──────────────────────────────────────────────
+# Agent Execution Engine
+# ──────────────────────────────────────────────
+def run_agent(user_input=None, resume_value=None):
+    """
+    Run or resume the LangGraph agent.
+    
+    - On first call: streams the full agent execution
+    - On interrupt: pauses and sets waiting_for_human=True
+    - On resume: continues from the interrupt with the user's answer
+    """
+    # Build agent if not cached
+    if st.session_state.agent is None:
+        agent, checkpointer = build_agent()
+        st.session_state.agent = agent
+        st.session_state.thread_id = str(uuid.uuid4())
+
+    agent = st.session_state.agent
+    config = {"configurable": {"thread_id": st.session_state.thread_id}}
+
+    # Prepare input
+    if resume_value is not None:
+        # Resuming from an interrupt
+        agent_input = Command(resume=resume_value)
+    else:
+        # Build the context message for the agent
+        context = (
+            f"Company Name: {st.session_state.company_name}\n"
+            f"Officer Insights: {st.session_state.manual_entry or 'None provided'}\n"
+            f"PDF Text Available: {'Yes' if st.session_state.pdf_extracted_text else 'No'}\n"
+        )
+        if st.session_state.pdf_extracted_text:
+            # Truncate for the message but full text goes to the tool
+            context += f"PDF Text Length: {len(st.session_state.pdf_extracted_text)} characters\n"
+
+        full_message = f"{user_input}\n\nContext:\n{context}"
+        agent_input = {"messages": [{"role": "user", "content": full_message}]}
+
+    # Stream the agent execution
+    try:
+        st.session_state.agent_running = True
+        
+        for event in agent.stream(agent_input, config=config, stream_mode="updates"):
+            for node_name, node_data in event.items():
+                if node_name == "__interrupt__":
+                    # Handle interrupt — the graph is paused
+                    interrupts = node_data
+                    if interrupts and len(interrupts) > 0:
+                        interrupt_info = interrupts[0]
+                        interrupt_value = interrupt_info.value if hasattr(interrupt_info, 'value') else interrupt_info
+
+                        st.session_state.waiting_for_human = True
+                        st.session_state.interrupt_data = interrupt_value
+
+                        # Display the question from the tool
+                        question = ""
+                        if isinstance(interrupt_value, dict):
+                            question = interrupt_value.get("question", str(interrupt_value))
+                        else:
+                            question = str(interrupt_value)
+
+                        add_message("assistant", question, type="interrupt")
+                        st.session_state.agent_running = False
+                        return  # Stop — wait for user input
+
+                elif node_name == "tools":
+                    # Tool execution results
+                    messages = node_data.get("messages", [])
+                    for msg in messages:
+                        tool_name = getattr(msg, 'name', 'unknown_tool')
+                        tool_content = msg.content if hasattr(msg, 'content') else str(msg)
+
+                        add_message(
+                            "assistant",
+                            f"🔧 **Tool `{tool_name}` executed.**",
+                            type="tool_call",
+                            tool_name=tool_name,
+                            tool_data=tool_content
+                        )
+
+                        # Check if this is the CAM report
+                        if tool_name == "generate_cam_report":
+                            st.session_state.cam_content = tool_content
+                            st.session_state.cam_generated = True
+
+                elif node_name == "agent":
+                    # Agent's reasoning / response messages
+                    messages = node_data.get("messages", [])
+                    for msg in messages:
+                        content = msg.content if hasattr(msg, 'content') else str(msg)
+                        # Skip empty content or pure tool-call messages
+                        if content and not getattr(msg, 'tool_calls', None):
+                            add_message("assistant", content, type="reasoning")
+                        elif getattr(msg, 'tool_calls', None):
+                            for tc in msg.tool_calls:
+                                tool_name = tc.get("name", "unknown")
+                                add_message(
+                                    "assistant",
+                                    f"🧠 **Calling tool:** `{tool_name}`...",
+                                    type="tool_invoke"
+                                )
+
+        st.session_state.agent_running = False
+
+    except Exception as e:
+        st.session_state.agent_running = False
+        add_message("assistant", f"❌ **Agent Error:** {str(e)}", type="error")
+
+
+# ──────────────────────────────────────────────
+# VIEW 1: Login
+# ──────────────────────────────────────────────
 def render_login():
     st.markdown("<h1 class='main-title'>CREDI-MITRA</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-title'>{ Next-Gen Corporate Credit Appraisal }</p>", unsafe_allow_html=True)
-    
-    # Center the login form
+    st.markdown("<p class='sub-title'>AI-Powered Corporate Credit Analyst Agent</p>", unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.container(border=True):
-            st.subheader("Credit Manager Login")
-            username = st.text_input("Username", value="admin", placeholder="Enter your corporate ID (hint: admin)")
-            password = st.text_input("Password", value="password", type="password", placeholder="Enter your password (hint: password)")
-            
-            if st.button("Authenticate", type="primary"):
+            st.subheader("🔐 Credit Manager Login")
+            st.caption("Authenticate to access the AI analysis platform")
+            st.markdown("")
+            username = st.text_input("Username", value="admin", placeholder="Corporate ID")
+            password = st.text_input("Password", value="password", type="password", placeholder="Password")
+            st.markdown("")
+            if st.button("🚀 Authenticate & Enter", type="primary", use_container_width=True):
                 if username == "admin" and password == "password":
                     st.session_state.logged_in = True
-                    st.success("Authentication successful!!! ")
+                    st.success("✅ Authentication successful!")
                     time.sleep(0.5)
-                    switch_page('dashboard')
+                    switch_page("dashboard")
                 else:
-                    st.error("Invalid credentials. Please try again.")
+                    st.error("❌ Invalid credentials. Please try again.")
 
-# --- VIEW 2: THE ADMIN DASHBOARD ---
+
+# ──────────────────────────────────────────────
+# VIEW 2: Dashboard
+# ──────────────────────────────────────────────
 def render_dashboard():
-    # Header area with logout button
     col_head, col_logout = st.columns([4, 1])
     with col_head:
-        st.header("Dashboard")
+        st.header("📊 Dashboard")
     with col_logout:
-        if st.button("Log Out"):
+        if st.button("🚪 Log Out"):
             st.session_state.logged_in = False
-            switch_page('login')
-    
+            switch_page("login")
+
     st.markdown("---")
-    
-    # Portfolio Metrics using st.columns and st.metric
+
     col1, col2, col3 = st.columns(3)
     with col1:
         with st.container(border=True):
@@ -163,74 +456,81 @@ def render_dashboard():
     with col3:
         with st.container(border=True):
             st.metric(label="Rejected (MTD)", value="8", delta="-2% vs Last Mo.", delta_color="inverse")
-        
+
     st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Call to action
+
     with st.container(border=True):
         st.subheader("⚙️ Application Analysis Center")
-        st.caption("Initiate a multi-agent AI analysis for new appliction")
+        st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
         st.markdown("<br>", unsafe_allow_html=True)
         col_btn_1, col_btn_2, col_btn_3 = st.columns([1, 2, 1])
         with col_btn_2:
-            if st.button(" 🚀 New Application Analysis 🚀 ", type="primary", use_container_width=True):
-                switch_page('analysis')
+            if st.button("🚀 New Application Analysis 🚀", type="primary", use_container_width=True):
+                switch_page("analysis")
         st.markdown("<br>", unsafe_allow_html=True)
 
-# --- VIEW 3: THE ANALYSIS & AGENT CHAT VIEW ---
+
+# ──────────────────────────────────────────────
+# VIEW 3: Analysis & Agent Chat
+# ──────────────────────────────────────────────
 def render_analysis():
-    # Sidebar for inputs
+    # ── Sidebar: Document Ingestion ──
     with st.sidebar:
-        with st.expander("Application Details", expanded=True):
-            company_name = st.text_input("Enter Company Name")
-            app_no = st.text_input("Enter Application No.")
-            app_date = st.date_input("Enter Application Date")
-            
-            # Dummy button for future integration
-            if st.button("🔄 Auto-Fetch Documents "):
-                st.info("Integration Pending : This will be integrated in later stages of development.")
-        
+        with st.expander("📋 Application Details", expanded=True):
+            company_name = st.text_input("Company Name")
+            app_no = st.text_input("Application No.")
+            app_date = st.date_input("Application Date")
+            if st.button("🔄 Auto-Fetch (Coming Soon)"):
+                st.info("Integration pending — will connect to core banking system.")
+
         st.markdown("---")
-        with st.expander("Document Ingestion", expanded=True):
-            st.info("Upload required documents for AI processing.")
-            
-            # File uploaders
-            app_form = st.file_uploader("Upload Application Form", type=["pdf", "docx"])
-            gst = st.file_uploader("Upload GST Returns (GSTR-2A/3B)", type=["pdf", "csv", "xlsx"])
-            bank = st.file_uploader("Upload Bank Statements", type=["pdf", "csv", "xlsx"])
-            annual = st.file_uploader("Upload Annual Reports (PDF)", type=["pdf"])
-            
-        
+
+        with st.expander("📁 Document Ingestion", expanded=True):
+            st.info("Upload the required documents for AI processing.")
+            app_form = st.file_uploader("Application Form", type=["pdf", "docx"])
+            cibil = st.file_uploader("CIBIL Score Report", type=["pdf"])
+            gst = st.file_uploader("GST Returns (GSTR-2A/3B)", type=["pdf", "csv", "xlsx"])
+            bank = st.file_uploader("Bank Statements", type=["pdf", "csv", "xlsx"])
+            annual = st.file_uploader("Annual Reports", type=["pdf"])
+
         st.markdown("---")
-        with st.expander("Officer Insights Documents", expanded=True):
-            officer_report = st.file_uploader("  Upload Officer Insights Report", type=["pdf", "docx", "txt"])
-            manual_entry = st.text_area("  Manual Entry ", 
-                         placeholder="e.g., Factory visit notes, management interview summary .", 
-                         height=150)
-            st.caption("💡 *Note: You only need to provide ONE of the above (either upload the report OR type a manual entry) to proceed.*")
-        
+
+        with st.expander("🧑‍💼 Officer Insights", expanded=True):
+            officer_report = st.file_uploader("Upload Officer Report", type=["pdf", "docx", "txt"])
+            manual_entry = st.text_area(
+                "Manual Notes",
+                placeholder="e.g., Factory visit notes, management interview summary...",
+                height=120
+            )
+            st.caption("💡 Provide either an uploaded report OR manual notes.")
+
         st.markdown("---")
-        
-        # Verify Button & Logic
+
+        # Submit button
         if st.button("🚨 Submit to Agent", type="primary", use_container_width=True):
             st.session_state.docs_verified = True
             st.session_state.company_name = company_name
             st.session_state.app_no = app_no
-            st.session_state.analyzed_company = company_name
-            st.session_state.analysis_step = 1
-            st.session_state.chat_history = []
-            st.session_state.chat_history.append({"role": "assistant", "content": f"✅ Received Details of **{company_name}**! Starting multi-agent analysis. Type **next** to proceed or tell the agent something in analysis."})
 
-            # --- Save uploaded files into a folder named CompanyName_AppNo ---
-            c_name = company_name.strip().replace(' ', '_') or 'Company'
-            a_no = app_no.strip().replace(' ', '_') or 'Application'
+            # Reset agent state for new analysis
+            st.session_state.messages = []
+            st.session_state.agent = None
+            st.session_state.thread_id = None
+            st.session_state.waiting_for_human = False
+            st.session_state.interrupt_data = None
+            st.session_state.cam_generated = False
+            st.session_state.cam_content = ""
+
+            # Save uploaded files
+            c_name = company_name.strip().replace(" ", "_") or "Company"
+            a_no = app_no.strip().replace(" ", "_") or "App"
             folder_name = f"{c_name}_{a_no}"
             save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", folder_name)
             os.makedirs(save_dir, exist_ok=True)
 
-            # Map each uploaded file to its section name
             file_map = {
                 "Application_Form": app_form,
+                "CIBIL_Score_Report": cibil,
                 "GST_Returns": gst,
                 "Bank_Statements": bank,
                 "Annual_Reports": annual,
@@ -238,16 +538,26 @@ def render_analysis():
             }
 
             saved_count = 0
+            extracted_text = ""
             for section_name, uploaded_file in file_map.items():
                 if uploaded_file is not None:
-                    # Keep the original extension
                     ext = os.path.splitext(uploaded_file.name)[1]
                     save_path = os.path.join(save_dir, f"{section_name}{ext}")
+                    file_bytes = uploaded_file.getbuffer()
                     with open(save_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
+                        f.write(file_bytes)
+                    if ext.lower() == ".pdf":
+                        try:
+                            pdf_reader = PdfReader(io.BytesIO(file_bytes))
+                            text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
+                            extracted_text += f"\n\n--- Document: {section_name} ---\n\n" + text
+                        except Exception as e:
+                            st.error(f"Failed to read {section_name}: {e}")
                     saved_count += 1
 
-            # Save manual officer entry as a text file if provided
+            st.session_state.pdf_extracted_text = extracted_text
+            st.session_state.manual_entry = manual_entry.strip() if manual_entry else ""
+
             if manual_entry and manual_entry.strip():
                 save_path = os.path.join(save_dir, "Officer_Manual_Notes.txt")
                 with open(save_path, "w") as f:
@@ -256,281 +566,161 @@ def render_analysis():
 
             if saved_count > 0:
                 st.success(f"✅ {saved_count} document(s) saved to `uploads/{folder_name}/`")
-            st.success("All details and documents submitted! You may talk to Agent for analysis.")
-            
-            # --- Original Strict Validation Logic (commented out for testing) ---
-            # if not company_name or not app_no or not app_date:
-            #     st.session_state.docs_verified = False
-            #     st.error("Missing Application Details. Please enter Company Name, Application No, and Application Date first.")
-            # elif app_form is None or gst is None or bank is None or annual is None:
-            #     st.session_state.docs_verified = False
-            #     st.error("Missing required documents. Please upload the Application Form, GST, Bank Statements, and Annual Reports.")
-            # elif officer_report is None and not manual_entry.strip():
-            #     st.session_state.docs_verified = False
-            #     st.error("Missing Officer Insights. Please upload an Insights Report or enter notes manually.")
-            # else:
-            #     st.session_state.docs_verified = True
-            #     st.success("All details and documents submitted! You may talk to Agent for analysis.")
+
+            # Add welcome message
+            add_message(
+                "assistant",
+                f"✅ **Documents received for {company_name}!**\n\n"
+                f"I'm your AI Credit Analyst Agent, powered by an LLM Orchestrator. "
+                f"I have access to 5 specialized analysis tools:\n\n"
+                f"1. 📄 **PDF Data Extractor** — Parse uploaded documents\n"
+                f"2. 🔍 **Web Litigation Crawler** — Search NCLT & news (interactive)\n"
+                f"3. 📊 **Feature Extractor** — Convert to ML features (interactive)\n"
+                f"4. 🤖 **XGBoost Scorer** — Credit risk prediction\n"
+                f"5. 📋 **CAM Report Generator** — Final credit memo\n\n"
+                f"Type **\"start analysis\"** to begin, or ask me anything about the credit appraisal process."
+            )
+            st.rerun()
 
         st.markdown("---")
         if st.button("← Back to Dashboard"):
-            switch_page('dashboard')
+            switch_page("dashboard")
 
-    # Main column config
-    st.markdown("<h1 class='main-title' style='font-size: 4rem;'>CREDI-MITRA-AI-AGENT</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-title' style='margin-bottom: 1rem;'>{ Next-Gen Corporate Credit Appraisal }</p>", unsafe_allow_html=True)
-    
-    # Display chat history
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-            
-            # Re-render CAM and Chart if it's the final output
-            if msg.get("is_cam", False) and st.session_state.cam_generated:
-                render_cam_output()
-    
-    # Chat Input Configuration
-    docs_ready = st.session_state.get('docs_verified', False)
-    step = st.session_state.get('analysis_step', 0)
-    
-    # Define agent steps
-    AGENT_STEPS = [
-        {"agent": "🤖 Main Agent", "action": "Validating inputs & routing tasks...", "result": "✔️ Inputs validated. Routing tasks to specialized agents.", "type": "success"},
-        {"agent": "📄 Extraction Agent", "action": "Parsing complex PDF tables using Vision models...", "result": "📌 Extracted: Balance Sheet data, P&L statements, and 4 director IDs from Annual Report.", "type": "info"},
-        {"agent": "📊 Data Engineer Agent", "action": "Reconciling GSTR-3B vs Bank Statements...", "result": "📌 Reconciled: 98.4% match found between reported GST revenue and Bank inflows.", "type": "info"},
-        {"agent": "🕵️ Research Agent", "action": "Crawling MCA filings and e-Courts for litigation risk...", "result": "📌 Research: 0 active litigations found. MCA status is 'Active'.", "type": "info"},
-        {"agent": "🧠 Underwriting Agent", "action": "Calculating ML risk score and generating CAM...", "result": "✔️ ML Score Calculated: 840 (Low Risk). Generated CAM based on 5 Cs of Credit.", "type": "success"},
-    ]
-    
+    # ── Main Area: Chat Interface ──
+    st.markdown("<h1 class='main-title' style='font-size: 3rem;'>CREDI-MITRA AI AGENT</h1>", unsafe_allow_html=True)
+    st.markdown("<p class='sub-title'>LLM-Orchestrated Credit Appraisal System</p>", unsafe_allow_html=True)
+
+    # Render all messages
+    for msg in st.session_state.messages:
+        role = msg["role"]
+        content = msg["content"]
+        msg_type = msg.get("type", "")
+
+        if role == "user":
+            with st.chat_message("user"):
+                st.markdown(content)
+        elif role == "assistant":
+            if msg_type == "tool_call":
+                with st.chat_message("assistant", avatar="🔧"):
+                    st.markdown(content)
+                    tool_name = msg.get("tool_name", "")
+                    tool_data = msg.get("tool_data", "")
+                    if tool_data:
+                        render_tool_output(tool_name, tool_data)
+
+                    # If this is the CAM report, render download button
+                    if tool_name == "generate_cam_report" and st.session_state.cam_generated:
+                        st.markdown("---")
+                        _render_cam_extras()
+
+            elif msg_type == "tool_invoke":
+                with st.chat_message("assistant", avatar="🧠"):
+                    st.markdown(content)
+
+            elif msg_type == "interrupt":
+                with st.chat_message("assistant", avatar="⏸️"):
+                    st.warning(content)
+
+            elif msg_type == "error":
+                with st.chat_message("assistant", avatar="❌"):
+                    st.error(content)
+
+            else:
+                with st.chat_message("assistant"):
+                    st.markdown(content)
+
+    # ── Chat Input ──
+    docs_ready = st.session_state.get("docs_verified", False)
+
     if not docs_ready:
         with st.chat_message("assistant"):
-            st.warning("⚠️ **Action Required:** Please upload all required documents and click 'Submit to Agent' in the sidebar to unlock the AI Analysis engine.")
+            st.warning(
+                "⚠️ **Action Required:** Upload documents and click "
+                "'Submit to Agent' in the sidebar to unlock the AI Agent."
+            )
         st.chat_input("🔒 Chat locked — Submit documents first", disabled=True)
     else:
-        # Determine chat input placeholder based on current step
-        if step <= len(AGENT_STEPS):
-            placeholder = f"Type 'next' to proceed → Step {step}/{len(AGENT_STEPS)}"
-        elif step == len(AGENT_STEPS) + 1:
-            placeholder = "Type 'generate' to generate CAM Report"
-        else:
-            placeholder = "Analysis complete. Type company name to start a new analysis."
-        
-        if prompt := st.chat_input(placeholder):
-            if step <= len(AGENT_STEPS):
-                # Only proceed if user types "next"
-                if prompt.strip().lower() != "next":
-                    st.session_state.chat_history.append({"role": "user", "content": prompt})
-                    st.session_state.chat_history.append({"role": "assistant", "content": "❌ Please type **next** to proceed to the next step."})
-                    st.rerun()
-                
-                # Run current agent step
-                agent = AGENT_STEPS[step - 1]
-                st.session_state.chat_history.append({"role": "user", "content": f"next"})
-                result_msg = f"**{agent['agent']}:** {agent['action']}\n\n{agent['result']}"
-                st.session_state.chat_history.append({"role": "assistant", "content": result_msg})
-                
-                # If this was the last agent step, prompt for generate
-                if step == len(AGENT_STEPS):
-                    st.session_state.chat_history.append({"role": "assistant", "content": "✅ All agents have completed their analysis. Type **generate** to generate the CAM Report."})
-                else:
-                    st.session_state.chat_history.append({"role": "assistant", "content": f"✅ Step {step}/{len(AGENT_STEPS)} complete. Would you like to proceed to the next agent (type **next**) or tell the agent want something more in analysis/??"})
-                
-                st.session_state.analysis_step = step + 1
-                st.rerun()
-            
-            elif step == len(AGENT_STEPS) + 1:
-                # User must type "generate" to create CAM
-                if prompt.strip().lower() != "generate":
-                    st.session_state.chat_history.append({"role": "user", "content": prompt})
-                    st.session_state.chat_history.append({"role": "assistant", "content": "❌ Please type **generate** to generate the CAM Report."})
-                    st.rerun()
-                
-                st.session_state.chat_history.append({"role": "user", "content": "generate"})
-                company = st.session_state.analyzed_company
-                cam_markdown = f"""
-### Comprehensive Credit Appraisal Memo (CAM)
-**Entity Analyzed:** {company}
-**Date:** {time.strftime('%Y-%m-%d')}
-**Industry Sector:** Advanced Manufacturing & Technology
-**Requested Facility:** $2.5M Term Loan, $500k Working Capital
+        if prompt := st.chat_input("Type here to interact with the AI Agent..."):
+            add_message("user", prompt)
 
----
+            if st.session_state.waiting_for_human:
+                # User is responding to an interrupt question
+                st.session_state.waiting_for_human = False
+                interrupt_data = st.session_state.interrupt_data
+                st.session_state.interrupt_data = None
 
-#### 1. Business & Management Overview (Character)
-**Assessment: Excellent**
-- **Promoter Background:** The management team possesses over 15 years of industry experience. KYC and background checks on key directors returned clear reports. 
-- **Litigation & Compliance:** An exhaustive AI-driven sweep of e-Courts and MCA databases revealed zero active litigations, no default histories, and a pristine track record regarding statutory filings (GST, Tax, ROC).
+                with st.chat_message("assistant", avatar="🧠"):
+                    with st.status("🔄 Resuming agent with your input...", expanded=True) as status:
+                        st.write(f"Your response: *{prompt}*")
+                        st.write("Feeding back to the orchestrator...")
+                        run_agent(resume_value=prompt)
+                        status.update(label="✅ Agent resumed!", state="complete")
 
-#### 2. Financial Performance & Cash Flows (Capacity)
-**Assessment: Strong**
-- **DSCR:** Calculated at a healthy 1.8x, indicating comfortable debt servicing ability.
-- **Reconciliation:** Machine learning reconciliation between GSTR-3B filings and Bank Statements yields a 98.4% match, confirming robust, verifiable top-line revenue.
-- **Liquidity:** Current Ratio stands at 1.45. Operating margins have remained stable at 18% despite recent sector-wide supply chain disruptions.
-
-#### 3. Capital Structure (Capital)
-**Assessment: Adequate to Strong**
-- **Leverage:** Debt-to-Equity ratio is a conservative 1.2x. 
-- **Skin in the Game:** The promoters have infused $300k in additional quasi-equity over the past 6 months to fund recent capital expenditure.
-
-#### 4. Security & Collateral (Collateral)
-**Assessment: Good**
-- **Primary Security:** First charge on all current assets and newly acquired machinery.
-- **Collateral Coverage:** Security value completely covers 120% of the proposed total exposure. The valuation reports were parsed and verified against internal real-estate benchmark models.
-
-#### 5. Macro-Economic Context (Conditions)
-**Assessment: Favorable**
-- **Industry Outlook:** The sector is currently enjoying significant government tailwinds and subsidies. No immediate macro-economic or regulatory red flags appear on the horizon.
-
----
-
-#### AI Final Recommendation:
-Based on the synthesized multi-agent analysis, the entity demonstrates robust financial health, excellent promoter standing, and sufficient collateral coverage.
-
-- **Proposed Limit:** $2.5 Million (Term Loan) + $500k (Working Capital)
-- **Suggested Interest Rate:** 8.5% p.a. (Priced for Low Risk tier)
-- **Risk Category:** Low-to-Moderate (Risk Score: 840/1000)
-- **Covenants Recommended:** Maintain DSCR > 1.3x and provide quarterly automated bank statement ingestion for continuous monitoring.
-                """
-                st.session_state.cam_content = cam_markdown
-                st.session_state.cam_generated = True
-                st.session_state.chat_history.append({"role": "assistant", "content": "Analysis finalized. See the detailed report below.", "is_cam": True})
-                st.session_state.analysis_step = step + 1
-                st.rerun()
-            
             else:
-                # Analysis already complete — restart for new company
-                st.session_state.analyzed_company = prompt
-                st.session_state.chat_history = []
-                st.session_state.cam_generated = False
-                st.session_state.cam_content = ""
-                st.session_state.analysis_step = 1
-                st.session_state.chat_history.append({"role": "assistant", "content": f"✅ Received Details of **{prompt}**! Starting multi-agent analysis. Type **next** to proceed."})
-                st.rerun()
+                # Normal message — run the agent
+                with st.chat_message("assistant", avatar="🧠"):
+                    with st.status("🧠 LLM Orchestrator is thinking...", expanded=True) as status:
+                        st.write("The AI Agent is analyzing your request and deciding which tools to use...")
+                        run_agent(user_input=prompt)
+
+                        if st.session_state.waiting_for_human:
+                            status.update(
+                                label="⏸️ Waiting for your input — please answer the question above",
+                                state="error"
+                            )
+                        else:
+                            status.update(label="✅ Analysis step complete!", state="complete")
+
+            st.rerun()
 
 
-def generate_cam_pdf(cam_text):
-    """Convert CAM markdown content into a professionally formatted PDF."""
-    # Strip emojis and other non-Latin-1 characters
-    cam_text = re.sub(r'[^\x00-\xff]', '', cam_text)
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.add_page()
+def _render_cam_extras():
+    """Render the CAM download button and explainability chart."""
+    if st.session_state.cam_content:
+        # SHAP explainability chart
+        st.subheader("📈 Model Explainability (Feature Impact)")
+        features = [
+            "CIBIL Score", "Bank Inflow", "GST Revenue",
+            "Company Age", "Litigation Count", "News Sentiment"
+        ]
+        impact = [0.8, 0.6, 0.4, 0.2, -0.3, -0.1]
+        shap_df = pd.DataFrame({
+            "Feature": features,
+            "Impact on Approval": impact
+        }).set_index("Feature")
 
-    # -- Title --
-    pdf.set_font("Helvetica", "B", 22)
-    pdf.set_text_color(30, 144, 255)  # Dodger Blue
-    pdf.cell(0, 14, "CREDI-MITRA", new_x="LMARGIN", new_y="NEXT", align="C")
-    pdf.set_font("Helvetica", "", 11)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 8, "Next-Gen Credit Intelligence", new_x="LMARGIN", new_y="NEXT", align="C")
-    pdf.ln(4)
-    # Divider line
-    pdf.set_draw_color(30, 144, 255)
-    pdf.set_line_width(0.6)
-    pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-    pdf.ln(6)
+        col_l, col_c, col_r = st.columns([1, 3, 1])
+        with col_c:
+            st.bar_chart(shap_df, color="#667eea", height=400)
 
-    # -- Parse and render each line --
-    for raw_line in cam_text.strip().splitlines():
-        line = raw_line.strip()
-        if not line:
-            pdf.ln(3)
-            continue
-
-        # Section heading (#### or ###)
-        if line.startswith("####") or line.startswith("###"):
-            heading = line.lstrip("#").strip()
-            # Strip bold markdown markers
-            heading = heading.replace("**", "")
-            pdf.set_font("Helvetica", "B", 13)
-            pdf.set_text_color(30, 60, 110)
-            pdf.multi_cell(0, 8, heading)
-            pdf.ln(2)
-
-        # Horizontal rule
-        elif line == "---":
-            pdf.ln(2)
-            pdf.set_draw_color(180, 180, 180)
-            pdf.set_line_width(0.3)
-            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-            pdf.ln(4)
-
-        # Bullet point
-        elif line.startswith("- "):
-            text = line[2:].replace("**", "")
-            pdf.set_font("Helvetica", "", 10)
-            pdf.set_text_color(50, 50, 50)
-            bullet_x = pdf.l_margin + 4
-            pdf.set_x(bullet_x)
-            pdf.multi_cell(pdf.w - pdf.l_margin - pdf.r_margin - 4, 6, "-  " + text)
-            pdf.ln(1)
-
-        # Regular text (bold labels like **Key:** Value)
-        else:
-            text = line.replace("**", "")
-            pdf.set_font("Helvetica", "", 10)
-            pdf.set_text_color(50, 50, 50)
-            pdf.multi_cell(0, 6, text)
-            pdf.ln(1)
-
-    # Output to bytes
-    return bytes(pdf.output())
+        # PDF download
+        pdf_bytes = generate_cam_pdf(st.session_state.cam_content)
+        c_name = st.session_state.get("company_name", "").strip().replace(" ", "_") or "Company"
+        a_no = st.session_state.get("app_no", "").strip().replace(" ", "_") or "App"
+        st.download_button(
+            label="📄 Download CAM Report (PDF)",
+            data=pdf_bytes,
+            file_name=f"{c_name}_{a_no}_CAM.pdf",
+            mime="application/pdf",
+            type="primary"
+        )
 
 
-def render_cam_output():
-    # Render the text
-    st.markdown(st.session_state.cam_content)
-    
-    st.divider()
-    
-    # Explainability: Mock SHAP Visual
-    st.subheader("Model Explainability (Mock SHAP Values)")
-    st.caption("Feature impacts on the final risk score & interest rate determination:")
-    
-    # Mock data for explainability bar chart
-    features = ['DSCR > 1.5', 'Clean Credit History', 'High Collateral Value', 'Sector Tailwinds', 'High Debt/Eq Ratio', 'Recent Modest Revenue Dip']
-    impact = [0.8, 0.6, 0.4, 0.2, -0.3, -0.1]
-    
-    shap_df = pd.DataFrame({
-        'Feature': features,
-        'Impact on Favorable Score': impact
-    }).set_index('Feature')
-    
-    # Wrap in columns to reduce width, and increase height parameter explicitly
-    col_chart_left, col_chart_center, col_chart_right = st.columns([1, 3, 1])
-    with col_chart_center:
-        st.bar_chart(shap_df, color="#1E90FF", height=500)
-    
-    # Generate PDF and offer download
-    pdf_bytes = generate_cam_pdf(st.session_state.cam_content)
-    # Build filename from analyzed company name & application no
-    c_name = st.session_state.get('analyzed_company', '').strip().replace(' ', '_') or 'Company'
-    a_no = st.session_state.get('app_no', '').strip().replace(' ', '_') or 'Application'
-    pdf_filename = f"{c_name}_{a_no}.pdf"
-    st.download_button(
-        label="📄 Download CAM Report (PDF)",
-        data=pdf_bytes,
-        file_name=pdf_filename,
-        mime="application/pdf",
-        type="primary"
-    )
-
-
-# --- MAIN APP CONTROLLER ---
+# ──────────────────────────────────────────────
+# Main Controller
+# ──────────────────────────────────────────────
 def main():
     if not st.session_state.logged_in:
-        # Force to login page if not authenticated
-        st.session_state.current_page = 'login'
+        st.session_state.current_page = "login"
         render_login()
     else:
-        # Route based on state
-        if st.session_state.current_page == 'dashboard':
+        if st.session_state.current_page == "dashboard":
             render_dashboard()
-        elif st.session_state.current_page == 'analysis':
+        elif st.session_state.current_page == "analysis":
             render_analysis()
         else:
-            # Fallback
             render_dashboard()
+
 
 if __name__ == "__main__":
     main()
