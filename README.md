@@ -46,35 +46,35 @@
 <div align="center">
 
 ```
-                    ┌──────────────────────────────────┐
-                    │        🧠 LLM ORCHESTRATOR       │
-                    │      Llama 3.1 · 8B · Groq       │
-                    │                                  │
-                    │     Thinks → Plans → Executes    │
-                    └───────────────┬──────────────────┘
-                                    │
-              ┌─────────────────────┼──────────────────────┐
-              │                     │                      │
+                    ┌─────────────────────────────────┐
+                    │         LLM ORCHESTRATOR        │
+                    │      Llama 3.1 · 8B · Groq      │
+                    │                                 │
+                    │     Thinks → Plans → Executes   │
+                    └─────────────────────────────────┘
+                                   │
+              ┌────────────────────┼─────────────────────-┐
+              │                    │                      │
         TOOL CALLS            REASONING             HUMAN-IN-THE-LOOP
-              │                     │                      │
+              │                    │                      │
    ┌──────────┴──────────┐         │         ┌────────────┴────────────┐
    │                     │         │         │                         │
 ┌──┴───┐  ┌──────────┐   │         │         │  ⏸  Ambiguous company?  │
-│ 📄   │  │ 🔍       │   │         │         │  ⏸  Missing CIBIL?      │
+│      │  │          │   │         │         │  ⏸  Missing CIBIL?      │
 │ PDF  │  │ Web      │   │         │         │  ⏸  Missing Revenue?    │
 │ Data │  │ Research │   │         │         │                         │
 └──┬───┘  └──────┬───┘   │         │         │  → Pauses execution     │
    │             │       │         │         │  → Asks analyst in chat │
 ┌──┴───┐  ┌──────┴───┐   │         │         │  → Resumes with answer  │
-│ 📊   │  │ 🤖       │   │         │         └─────────────────────────┘
+│      │  │          │   │         │         └─────────────────────────┘
 │ Feat │  │ XGBoost  │   │         │
 │ Eng  │  │ Scorer   │   │         │
 └──┬───┘  └──────┬───┘   │         │
    │             │       │         │
    └──────┬──────┘       │         │
     ┌─────┴─────┐        │         │
-    │ 📋 CAM    │        │         │
-    │ Report    │◄───────┘─────────┘
+    │   CAM     │        │         │
+    │  Report   │◄───────┘─────────┘
     └───────────┘
 ```
 
@@ -82,16 +82,13 @@
 
 <br/>
 
-### Old vs. New Architecture
+## ✨ Key Features
 
-| | **Before** (Fixed Pipeline) | **Now** (LLM Orchestrator) |
-|:---|:---|:---|
-| **Execution** | Hardcoded sequential steps | LLM dynamically decides order |
-| **Error Handling** | Crash or silent skip | Agent reasons about missing data, asks user |
-| **Interactivity** | None — runs to completion | Pauses mid-analysis for clarification |
-| **Extensibility** | New step = rewrite pipeline | New tool = agent discovers it automatically |
-| **Transparency** | Final output only | Every tool call visible in real-time chat |
-| **Model** | Gemini (Google) | Llama 3.1 via Groq — open-source, blazing fast |
+*   **🧠 ReAct LLM Orchestrator:** Powered by Llama 3.1 via Groq. The agent dynamically decides which tools to call, rather than following a rigid pipeline.
+*   **🤝 Human-in-the-Loop (HITL):** The system pauses execution to ask the human analyst for clarification when data is missing or ambiguous (e.g., multiple companies found, missing CIBIL score) before resuming the analysis.
+*   **🌐 Multi-Source Data Ingestion:** Extracts data from uploaded PDFs (bank statements, GST) and performs web-scale secondary research (NCLT filings, news sentiment).
+*   **🤖 XGBoost Credit Scoring:** A custom ML model computes the probability of default, recommends an approved limit, and sets a dynamic interest rate based on risk premiums.
+*   **📄 Automated CAM Generation:** Synthesizes all gathered data, financial metrics, and ML decisions into a final, downloadable PDF Credit Appraisal Memorandum.
 
 <br/>
 
@@ -99,211 +96,16 @@
 
 <br/>
 
-## 🔧 Tool Suite
+## 🤖 Machine Learning Engine
 
-The orchestrator has access to **5 specialized tools**, each responsible for a critical phase of credit analysis:
+CREDI-MITRA uses a pre-trained **XGBoost Classifier** to evaluate credit risk, trained on 5,000 synthetic corporate credit records.
 
-<br/>
-
-<table>
-<thead>
-<tr>
-<th align="center">#</th>
-<th>Tool</th>
-<th>Function</th>
-<th align="center">HITL</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td align="center">1</td>
-<td><code>extract_pdf_data</code></td>
-<td>Parses uploaded PDFs using regex to extract CIBIL scores, GST revenue, bank inflows, and document structure</td>
-<td align="center">—</td>
-</tr>
-<tr>
-<td align="center">2</td>
-<td><code>crawl_web_for_litigation</code></td>
-<td>Searches NCLT filings, litigation records, RBI regulatory actions, and aggregates news sentiment</td>
-<td align="center">⏸️</td>
-</tr>
-<tr>
-<td align="center">3</td>
-<td><code>extract_numerical_features</code></td>
-<td>Merges PDF + Web data into 6 numerical features required by the ML model</td>
-<td align="center">⏸️</td>
-</tr>
-<tr>
-<td align="center">4</td>
-<td><code>run_xgboost_scorer</code></td>
-<td>Runs the pre-trained XGBoost classifier → Approved/Rejected, Limit (₹Cr), Interest Rate (%)</td>
-<td align="center">—</td>
-</tr>
-<tr>
-<td align="center">5</td>
-<td><code>generate_cam_report</code></td>
-<td>Produces the final Credit Appraisal Memorandum using the Five Cs of Credit framework</td>
-<td align="center">—</td>
-</tr>
-</tbody>
-</table>
-
-<br/>
-
-> **⏸️ HITL** = Human-in-the-Loop. These tools can pause execution via LangGraph's `interrupt()` to ask the analyst a question, then resume seamlessly with `Command(resume=...)`.
-
-<br/>
-
----
-
-<br/>
-
-## 📊 Data Pipeline
-
-How unstructured documents become a credit decision:
-
-```
-  UPLOADED PDFs                          WEB SEARCH
-  ────────────                           ──────────
-  ┌─────────────┐                    ┌──────────────────┐
-  │ App Form    │                    │ NCLT Filings     │
-  │ CIBIL Report│──► extract_pdf    │ News Headlines   │──► crawl_web
-  │ GST Returns │      _data        │ RBI Actions      │     _for_litigation
-  │ Bank Stmt   │        │          │ Court Records    │        │
-  │ Annual Rpt  │        │          └──────────────────┘        │
-  └─────────────┘        │                                      │
-                         │          ┌───────────────────┐       │
-                         └─────────►│ extract_numerical │◄──────┘
-                                    │    _features      │
-                                    └────────┬──────────┘
-                                             │
-                               ┌─────────────┴─────────────┐
-                               │     6 ML FEATURES          │
-                               │  ┌───────────────────────┐ │
-                               │  │ Company_Age           │ │
-                               │  │ CIBIL_Commercial_Score│ │
-                               │  │ GSTR_Declared_Rev_Cr  │ │
-                               │  │ Bank_Stmt_Inflow_Cr   │ │
-                               │  │ Litigation_Count      │ │
-                               │  │ News_Sentiment_Score  │ │
-                               │  └───────────────────────┘ │
-                               └─────────────┬──────────────┘
-                                             │
-                                    ┌────────┴────────┐
-                                    │  🤖 XGBoost     │
-                                    │  97% Accuracy   │
-                                    ├─────────────────┤
-                                    │ ✅ Approved / ❌│
-                                    │ ₹ Limit (Cr)   │
-                                    │ % Interest Rate │
-                                    │ Probability     │
-                                    └────────┬────────┘
-                                             │
-                                    ┌────────┴────────┐
-                                    │  📋 CAM REPORT  │
-                                    │  Five Cs Format │
-                                    │  PDF Download   │
-                                    └─────────────────┘
-```
-
-<br/>
-
----
-
-<br/>
-
-## 🤝 Human-in-the-Loop
-
-CREDI-MITRA is designed for **collaboration**, not automation-only. The agent knows when to ask for help:
-
-<br/>
-
-### Scenario 1 — Ambiguous Company Name
-
-When web research finds multiple matching entities:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  ⏸️  Agent Message                                           │
-│                                                              │
-│  ⚠️ Ambiguous Company Name Detected                         │
-│                                                              │
-│  While searching for "Tata", I found multiple entities:      │
-│                                                              │
-│  1. Tata Technologies Ltd. — IT Services (Mumbai)            │
-│  2. Tata Industrial Solutions Pvt. Ltd. — Manufacturing      │
-│  3. Tata Finance & Leasing Co. — NBFC (Delhi)                │
-│                                                              │
-│  Which company are you analyzing?                            │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Scenario 2 — Missing Financial Data
-
-When critical numbers can't be extracted from uploaded documents:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  ⏸️  Agent Message                                           │
-│                                                              │
-│  📊 Missing Financial Data for XYZ Corp                      │
-│                                                              │
-│  I could not find the following in the uploaded documents:    │
-│                                                              │
-│  • CIBIL Commercial Score (typically 300–900)                 │
-│  • Bank Statement Total Inflow in Crores                     │
-│                                                              │
-│  Please provide: CIBIL: 750, Inflow: 115.0                   │
-└──────────────────────────────────────────────────────────────┘
-```
-
-<br/>
-
-### Technical Implementation
-
-```
-interrupt()  →  Graph pauses  →  Streamlit shows question  →  User replies
-     →  Command(resume=answer)  →  Graph resumes from exact pause point
-```
-
-State is persisted via **LangGraph MemorySaver** — no page refresh, no data loss.
-
-<br/>
-
----
-
-<br/>
-
-## � ML Model Performance
-
-<br/>
-
-<div align="center">
-
-| Metric | Value |
-|:-------|:-----:|
-| **Algorithm** | XGBoost Classifier |
-| **Accuracy** | **97%** |
-| **Training Data** | 5,000 synthetic corporate credit records |
-| **Features** | 6 numerical features |
-| **Explainability** | SHAP-based feature importance |
-| **Outputs** | Approval Decision, Credit Limit, Interest Rate, Probability |
-
-</div>
-
-<br/>
-
-### Credit Decision Rules
-
-The model learns patterns from these underwriting business rules:
-
-| Rule | Condition | Result |
-|:-----|:----------|:-------|
-| **CIBIL Cutoff** | Score < 600 | ❌ Rejected |
-| **Litigation Risk** | Count ≥ 3 or Sentiment < -0.5 | ❌ Rejected |
-| **Data Paradox** | GST vs Bank variance > 25% | ❌ Rejected (circular trading flag) |
-| **Limit Calculation** | Bank Inflow × (15-25%) × (CIBIL/900) | ₹ Cr limit |
-| **Interest Rate** | Base 8.5% + risk premium + age premium | Dynamic % |
+*   **Accuracy:** 97%
+*   **Features Analyzed:** Company Age, CIBIL Score, GST Revenue, Bank Inflow, Litigation Count, and News Sentiment.
+*   **Decision Outputs:**
+    1.  **Approval Decision** (Approved / Rejected)
+    2.  **Recommended Limit (₹)** (Scaled by CIBIL and inflows)
+    3.  **Dynamic Interest Rate (%)** (Base Premium + Risk Premium)
 
 <br/>
 
@@ -397,7 +199,7 @@ CREDI-MITRA/
 ├── requirements.txt                # Python dependencies
 ├── .env                            # API keys (GROQ_API_KEY, GROQ_MODEL)
 │
-├── ml/                             # Machine Learning
+├── model/                          # Machine Learning
 │   ├── model.json                  # Pre-trained XGBoost (97% accuracy)
 │   ├── data.csv                    # 5,000 synthetic records
 │   ├── data_maker.py               # Data generation script
