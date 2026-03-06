@@ -37,37 +37,41 @@
 
 <div align="center">
 
-```
-                    ┌─────────────────────────────────┐
-                    │         LLM ORCHESTRATOR        │
-                    │      Llama 3.1 · 8B · Groq      │
-                    │                                 │
-                    │     Thinks → Plans → Executes   │
-                    └─────────────────────────────────┘
-                                   │
-              ┌────────────────────┼─────────────────────-┐
-              │                    │                      │
-        TOOL CALLS            REASONING             HUMAN-IN-THE-LOOP
-              │                    │                      │
-   ┌──────────┴──────────┐         │         ┌────────────┴────────────┐
-   │                     │         │         │                         │
-┌──┴───┐  ┌──────────┐   │         │         │  ⏸  Ambiguous company?  │
-│      │  │          │   │         │         │  ⏸  Missing CIBIL?      │
-│ PDF  │  │ Web      │   │         │         │  ⏸  Missing Revenue?    │
-│ Data │  │ Research │   │         │         │                         │
-└──┬───┘  └──────┬───┘   │         │         │  → Pauses execution     │
-   │             │       │         │         │  → Asks analyst in chat │
-┌──┴───┐  ┌──────┴───┐   │         │         │  → Resumes with answer  │
-│      │  │          │   │         │         └─────────────────────────┘
-│ Feat │  │ XGBoost  │   │         │
-│ Eng  │  │ Scorer   │   │         │
-└──┬───┘  └──────┬───┘   │         │
-   │             │       │         │
-   └──────┬──────┘       │         │
-    ┌─────┴─────┐        │         │
-    │   CAM     │        │         │
-    │  Report   │◄───────┘─────────┘
-    └───────────┘
+```mermaid
+graph TD;
+    %% Styling
+    classDef orchestrator fill:#667eea,stroke:#fff,stroke-width:2px,color:#fff,font-weight:bold;
+    classDef tools fill:#1e1e35,stroke:#4a4a75,stroke-width:2px,color:#a8edea;
+    classDef hitl fill:#4a1e35,stroke:#ff6b6b,stroke-width:2px,color:#ff9e9e,stroke-dasharray: 5 5;
+    classDef output fill:#141423,stroke:#667eea,stroke-width:2px,color:#fff,font-weight:bold;
+
+    %% Nodes
+    A[🧠 LLM ORCHESTRATOR<br>Llama 3.1 • 8B • Groq<br>Thinks → Plans → Executes]:::orchestrator
+    
+    subgraph Tool Suite
+        B([📄 extract_pdf_data]):::tools
+        C([🔍 crawl_web_for_litigation]):::tools
+        D([📊 extract_numerical_features]):::tools
+        E([🤖 run_xgboost_scorer<br>97% Accuracy]):::tools
+    end
+    
+    subgraph UI/Analyst
+        H[[👤 HUMAN-IN-THE-LOOP<br>• Ambiguous company?<br>• Missing CIBIL? <br>• Missing Revenue?]]:::hitl
+    end
+
+    F{📄 final_cam_report}:::output
+
+    %% Flow
+    A -->|Calls Tool| B
+    A -->|Calls Tool| C
+    A -->|Calls Tool| D
+    A -->|Calls Tool| E
+    
+    C -.->|Pauses on ambiguity| H
+    D -.->|Pauses on missing data| H
+    H -.->|Resumes with Analyst input| A
+    
+    B & C & D & E ==>|Synthesizes Data| F
 ```
 
 </div>
