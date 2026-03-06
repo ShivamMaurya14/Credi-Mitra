@@ -35,50 +35,7 @@
 
 <div align="center">
 
-```mermaid
-flowchart TD
-    %% Global Style
-    classDef default font-size:16px,padding:15px;
-    
-    %% Input Layer
-    IN[["📁 <b>INPUT DATA</b><br/>PDF • CSV • XLSX<br/>Officer Notes"]]
-    
-    %% Orchestration Layer
-    A["🧠 <b>LLM ORCHESTRATOR</b><br/>Llama 3.1 • 8B • Groq<br/><i>ReAct Agentic Workspace</i>"]
-    
-    subgraph ToolSuite ["<b>INTELLIGENCE TOOLS</b>"]
-        direction TB
-        B(["📄 <b>Data Ingestion</b><br/>Extract Multi-format Text"])
-        C(["🔍 <b>Tavily Search</b><br/>Litigation & News Sentiment"])
-        D(["📊 <b>Feature Engine</b><br/>HITL Missing Data Collector"])
-        E(["🤖 <b>ML Scorer</b><br/>XGBoost Classification"])
-        G(["📋 <b>CAM Engine</b><br/>Report Synthesis"])
-    end
-    
-    subgraph UI ["<b>HUMAN-IN-THE-LOOP</b>"]
-        H{{"👤 <b>CREDIT ANALYST</b><br/>• Clarify Ambiguities<br/>• Input Missing Metrics"}}
-    end
-
-    F{{"📄 <b>CREDIT MEMO (PDF)</b><br/>The Final CAM Report"}}
-
-    %% Flow
-    IN ==> A
-    A ==>|"Decides Plan"| ToolSuite
-    
-    C -.->|"Ambiguity Pause"| H
-    D -.->|"Data Gap Pause"| H
-    H -.->|"Resume Analysis"| A
-    
-    ToolSuite ===>|"Final Synthesis"| F
-
-    %% Styling
-    style A fill:#667eea,stroke:#fff,stroke-width:3px,color:#fff,font-weight:bold
-    style ToolSuite fill:#1e1e35,stroke:#4a4a75,stroke-width:2px,color:#fff
-    style UI fill:#2a1b2e,stroke:#ff6b6b,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
-    style H fill:#4a1e35,stroke:#ff6b6b,stroke-width:2px,color:#fff
-    style F fill:#141423,stroke:#667eea,stroke-width:3px,color:#fff,font-weight:bold
-    style IN fill:#34d399,stroke:#fff,stroke-width:2px,color:#000,font-weight:bold
-```
+![System Architecture](system_architecture.png)
 
 </div>
 
