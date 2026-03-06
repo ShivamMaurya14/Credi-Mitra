@@ -21,7 +21,7 @@
 
 ## 📖 About
 
-**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). It ingests unstructured documents (pypdf), conducts deep secondary web research (DuckDuckGo & BeautifulSoup), and leverages an XGBoost ML model to recommend whether to lend, an optimal credit limit, and the risk premium.
+**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). It ingests multi-format data (**PDF, CSV, XLSX**), conducts deep secondary web research (DuckDuckGo & BeautifulSoup), and leverages an XGBoost ML model to recommend whether to lend, an optimal credit limit, and the risk premium.
 
 > **💡 Core Innovation:** Instead of a fixed pipeline, an LLM Agent dynamically decides what to do next, asks the analyst for help when data is ambiguous, and shows every intermediate step transparently in a chat environment.
 
@@ -83,7 +83,7 @@ flowchart TD
 
 *   **🧠 ReAct LLM Orchestrator:** Powered by Llama 3.1 via Groq. The agent dynamically decides which tools to call, rather than following a rigid pipeline.
 *   **🤝 Human-in-the-Loop (HITL):** The system pauses execution to ask the human analyst for clarification when data is missing or ambiguous (e.g., multiple companies found, missing CIBIL score) before resuming the analysis.
-*   **🌐 Multi-Source Data Ingestion:** Extracts data from uploaded PDFs (bank statements, GST) and performs web-scale secondary research (NCLT filings, news sentiment).
+*   **🌐 Multi-Source Data Ingestion:** Extracts data from uploaded files (**PDF, CSV, Excel**) and performs web-scale secondary research (NCLT filings, news sentiment).
 *   **🤖 XGBoost Credit Scoring:** A custom ML model computes the probability of default, recommends an approved limit, and sets a dynamic interest rate based on risk premiums.
 *   **📄 Automated CAM Generation:** Synthesizes all gathered data, financial metrics, and ML decisions into a final, downloadable PDF Credit Appraisal Memorandum.
 
@@ -108,7 +108,7 @@ CREDI-MITRA uses a pre-trained **XGBoost Classifier** to evaluate credit risk, t
 | 🔗 **Agent Framework** | [LangGraph](https://langchain-ai.github.io/langgraph/) | ReAct agent, tool calling, interrupt/resume |
 | 🖥️ **Frontend** | [Streamlit](https://streamlit.io/) | Chat interface, document upload, PDF export |
 | 🤖 **ML Engine** | [XGBoost](https://xgboost.readthedocs.io/) | Credit risk classification (97% accuracy) |
-| 📄 **PDF Processing** | [pypdf](https://pypdf.readthedocs.io/) + [fpdf2](https://py-pdf.github.io/fpdf2/) | Document parsing & report generation |
+| 📄 **Data Parsing** | [pypdf](https://pypdf.readthedocs.io/) + [Pandas](https://pandas.pydata.org/) | PDF extraction & Tabular data (CSV/XLSX) processing |
 | 🐍 **Language** | Python 3.10+ | Core application |
 
 </div>

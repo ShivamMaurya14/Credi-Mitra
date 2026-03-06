@@ -352,6 +352,7 @@ def run_agent(user_input=None, resume_value=None):
         base_premium = st.session_state.get("base_premium", 8.5)
         context = (
             f"Company Name: {st.session_state.company_name}\n"
+            f"Application No: {st.session_state.app_no}\n"
             f"Officer Insights: {st.session_state.manual_entry or 'None provided'}\n"
             f"PDF Text Available: {'Yes' if st.session_state.pdf_extracted_text else 'No'}\n"
             f"Base Interest Rate Premium: {base_premium}%\n"
@@ -498,7 +499,7 @@ def render_dashboard():
     col_action, col_settings = st.columns([1.1, 1.4])
 
     with col_action:
-        with st.container(border=True):
+        with st.container(height=400, border=True):
             st.subheader("⚡ Quick Actions")
             st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
             st.markdown("<br>", unsafe_allow_html=True)
@@ -508,7 +509,7 @@ def render_dashboard():
             st.success("🤖 **System Status:**\n\n✅ LLM Orchestrator Online\n\n✅ XGBoost Engine Ready")
 
     with col_settings:
-        with st.container(border=True):
+        with st.container(height=400, border=True):
             st.subheader("🎛️ Credit Policy Parameters")
             st.caption("Configure base parameters used in dynamic credit decisioning")
             st.markdown("<br>", unsafe_allow_html=True)
@@ -614,7 +615,21 @@ def render_analysis():
                         try:
                             pdf_reader = PdfReader(io.BytesIO(file_bytes))
                             text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
-                            extracted_text += f"\n\n--- Document: {section_name} ---\n\n" + text
+                            extracted_text += f"\n\n--- Document: {section_name} (PDF) ---\n\n" + text
+                        except Exception as e:
+                            st.error(f"Failed to read {section_name}: {e}")
+                    elif ext.lower() == ".csv":
+                        try:
+                            df = pd.read_csv(io.BytesIO(file_bytes))
+                            text = df.to_string(index=False)
+                            extracted_text += f"\n\n--- Document: {section_name} (CSV) ---\n\n" + text
+                        except Exception as e:
+                            st.error(f"Failed to read {section_name}: {e}")
+                    elif ext.lower() in [".xlsx", ".xls"]:
+                        try:
+                            df = pd.read_excel(io.BytesIO(file_bytes))
+                            text = df.to_string(index=False)
+                            extracted_text += f"\n\n--- Document: {section_name} (Excel) ---\n\n" + text
                         except Exception as e:
                             st.error(f"Failed to read {section_name}: {e}")
                     saved_count += 1
@@ -629,20 +644,21 @@ def render_analysis():
                 saved_count += 1
 
             if saved_count > 0:
-                st.success(f"✅ {saved_count} document(s) saved to `uploads/{folder_name}/`")
+                st.success(f"✅ {saved_count} document(s) uploaded and extracted.")
 
-            # Add welcome message
+            # Add welcome message and clear history for fresh analysis
+            st.session_state.messages = []
             add_message(
                 "assistant",
-                f"✅ **Documents received for {company_name}!**\n\n"
-                f"I'm your AI Credit Analyst Agent, powered by an LLM Orchestrator. "
-                f"I have access to 5 specialized analysis tools:\n\n"
-                f"1. 📄 **PDF Data Extractor** — Parse uploaded documents\n"
-                f"2. 🔍 **Web Litigation Crawler** — Search NCLT & news (interactive)\n"
-                f"3. 📊 **Feature Extractor** — Convert to ML features (interactive)\n"
-                f"4. 🤖 **XGBoost Scorer** — Credit risk prediction\n"
-                f"5. 📋 **CAM Report Generator** — Final credit memo\n\n"
-                f"Type **\"start analysis\"** to begin, or ask me anything about the credit appraisal process."
+                f"✅ **Documents ready for {company_name}!** (App No: {app_no})\n\n"
+                f"I am now ready to perform the Credit Appraisal. My workflow includes:\n\n"
+                f"1. 📄 **Document Analysis** — Financial extraction from PDFs\n"
+                f"2. 🔍 **External Verification** — Web search for NCLT cases & News\n"
+                f"3. 📊 **Feature Synthesis** — Normalizing data (Currency conversions, etc.)\n"
+                f"4. 🤖 **Risk Scoring** — Running the XGBoost ML Engine\n"
+                f"5. 📋 **Memo Generation** — Producing the final CAM report\n\n"
+                f"**Type \"start analysis\" below to begin.**",
+                avatar="🧠"
             )
             st.rerun()
 
@@ -694,48 +710,38 @@ def render_analysis():
                     st.markdown(content)
 
     # ── Chat Input ──
-    docs_ready = st.session_state.get("docs_verified", False)
+    if prompt := st.chat_input("Type here to interact with the AI Agent..."):
+        add_message("user", prompt)
 
-    if not docs_ready:
-        with st.chat_message("assistant"):
-            st.warning(
-                "⚠️ **Action Required:** Upload documents and click "
-                "'Submit to Agent' in the sidebar to unlock the AI Agent."
-            )
-        st.chat_input("🔒 Chat locked — Submit documents first", disabled=True)
-    else:
-        if prompt := st.chat_input("Type here to interact with the AI Agent..."):
-            add_message("user", prompt)
+        if st.session_state.waiting_for_human:
+            # User is responding to an interrupt question
+            st.session_state.waiting_for_human = False
+            interrupt_data = st.session_state.interrupt_data
+            st.session_state.interrupt_data = None
 
-            if st.session_state.waiting_for_human:
-                # User is responding to an interrupt question
-                st.session_state.waiting_for_human = False
-                interrupt_data = st.session_state.interrupt_data
-                st.session_state.interrupt_data = None
+            with st.chat_message("assistant", avatar="🧠"):
+                with st.status("🔄 Resuming agent with your input...", expanded=True) as status:
+                    st.write(f"Your response: *{prompt}*")
+                    st.write("Feeding back to the orchestrator...")
+                    run_agent(resume_value=prompt)
+                    status.update(label="✅ Agent resumed!", state="complete")
 
-                with st.chat_message("assistant", avatar="🧠"):
-                    with st.status("🔄 Resuming agent with your input...", expanded=True) as status:
-                        st.write(f"Your response: *{prompt}*")
-                        st.write("Feeding back to the orchestrator...")
-                        run_agent(resume_value=prompt)
-                        status.update(label="✅ Agent resumed!", state="complete")
+        else:
+            # Normal message — run the agent
+            with st.chat_message("assistant", avatar="🧠"):
+                with st.status("🧠 LLM Orchestrator is thinking...", expanded=True) as status:
+                    st.write("The AI Agent is analyzing your request and deciding which tools to use...")
+                    run_agent(user_input=prompt)
 
-            else:
-                # Normal message — run the agent
-                with st.chat_message("assistant", avatar="🧠"):
-                    with st.status("🧠 LLM Orchestrator is thinking...", expanded=True) as status:
-                        st.write("The AI Agent is analyzing your request and deciding which tools to use...")
-                        run_agent(user_input=prompt)
+                    if st.session_state.waiting_for_human:
+                        status.update(
+                            label="⏸️ Waiting for your input — please answer the question above",
+                            state="error"
+                        )
+                    else:
+                        status.update(label="✅ Analysis step complete!", state="complete")
 
-                        if st.session_state.waiting_for_human:
-                            status.update(
-                                label="⏸️ Waiting for your input — please answer the question above",
-                                state="error"
-                            )
-                        else:
-                            status.update(label="✅ Analysis step complete!", state="complete")
-
-            st.rerun()
+        st.rerun()
 
 
 def _render_cam_extras():

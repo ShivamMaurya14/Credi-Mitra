@@ -75,15 +75,23 @@ def extract_pdf_data(pdf_text: str) -> str:
     if cibil_match:
         numbers["CIBIL_Score"] = int(cibil_match.group(1))
 
-    # Try to find revenue figures
-    revenue_match = re.search(r'(?:revenue|turnover|sales)[:\s]*(?:Rs\.?|INR|₹)?\s*([\d,.]+)\s*(?:Cr|Crore|cr)', pdf_text, re.IGNORECASE)
+    # Try to find revenue figures (handling Cr and Lakhs)
+    revenue_match = re.search(r'(?:revenue|turnover|sales)[:\s]*(?:Rs\.?|INR|₹)?\s*([\d,.]+)\s*(?:Cr|Crore|cr|Lakh|lakh|Lakhs|lakhs)', pdf_text, re.IGNORECASE)
     if revenue_match:
-        numbers["Revenue_Cr"] = float(revenue_match.group(1).replace(",", ""))
+        val = float(revenue_match.group(1).replace(",", ""))
+        unit = revenue_match.group(2).lower() if revenue_match.lastindex >= 2 else "cr"
+        if 'lakh' in unit:
+            val = val / 100.0  # Normalized to Crores
+        numbers["Revenue_Cr"] = round(val, 2)
 
-    # Try to find bank inflow
-    inflow_match = re.search(r'(?:inflow|bank\s*inflow|total\s*inflow)[:\s]*(?:Rs\.?|INR|₹)?\s*([\d,.]+)\s*(?:Cr|Crore|cr)?', pdf_text, re.IGNORECASE)
+    # Try to find bank inflow (handling Cr and Lakhs)
+    inflow_match = re.search(r'(?:inflow|bank\s*inflow|total\s*inflow)[:\s]*(?:Rs\.?|INR|₹)?\s*([\d,.]+)\s*(?:Cr|Crore|cr|Lakh|lakh|Lakhs|lakhs)?', pdf_text, re.IGNORECASE)
     if inflow_match:
-        numbers["Bank_Inflow_Cr"] = float(inflow_match.group(1).replace(",", ""))
+        val = float(inflow_match.group(1).replace(",", ""))
+        unit = (inflow_match.group(2) or "cr").lower()
+        if 'lakh' in unit:
+            val = val / 100.0
+        numbers["Bank_Inflow_Cr"] = round(val, 2)
 
     result = {
         "status": "success",
@@ -302,28 +310,37 @@ def extract_numerical_features(
         response_text = str(human_response)
         
         if "CIBIL_Commercial_Score" in critical_missing:
-            match = re.search(r'(?:CIBIL|score)[:\s]*(\d{3,4})', response_text, re.IGNORECASE)
+            match = re.search(r'(?:CIBIL|score)[:\s]*(\d{3})', response_text, re.IGNORECASE)
             if match:
                 features["CIBIL_Commercial_Score"] = int(match.group(1))
             else:
-                # Try to find any 3-digit number
                 nums = re.findall(r'\b(\d{3})\b', response_text)
                 features["CIBIL_Commercial_Score"] = int(nums[0]) if nums else 700
 
-        if "GSTR_Declared_Revenue_Cr" in critical_missing:
-            match = re.search(r'(?:revenue|gstr|gst)[:\s]*([\d.]+)', response_text, re.IGNORECASE)
+        def parse_financial_value(pattern, text):
+            match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                features["GSTR_Declared_Revenue_Cr"] = float(match.group(1))
+                val = float(match.group(1).replace(",", ""))
+                unit = (match.group(2) or "cr").lower()
+                if 'lakh' in unit:
+                    return val / 100.0
+                return val
+            return None
+
+        if "GSTR_Declared_Revenue_Cr" in critical_missing:
+            val = parse_financial_value(r'(?:revenue|gst)[:\s]*([\d.,]+)\s*(cr|lakh|crore)?', response_text)
+            if val is not None:
+                features["GSTR_Declared_Revenue_Cr"] = val
             else:
-                nums = re.findall(r'(\d+\.?\d*)', response_text)
-                features["GSTR_Declared_Revenue_Cr"] = float(nums[1]) if len(nums) > 1 else 100.0
+                nums = re.findall(r'(\d+(?:\.\d+)?)', response_text)
+                features["GSTR_Declared_Revenue_Cr"] = float(nums[0]) if nums else 100.0
 
         if "Bank_Statement_Inflow_Cr" in critical_missing:
-            match = re.search(r'(?:inflow|bank)[:\s]*([\d.]+)', response_text, re.IGNORECASE)
-            if match:
-                features["Bank_Statement_Inflow_Cr"] = float(match.group(1))
+            val = parse_financial_value(r'(?:inflow|bank)[:\s]*([\d.,]+)\s*(cr|lakh|crore)?', response_text)
+            if val is not None:
+                features["Bank_Statement_Inflow_Cr"] = val
             else:
-                nums = re.findall(r'(\d+\.?\d*)', response_text)
+                nums = re.findall(r'(\d+(?:\.\d+)?)', response_text)
                 features["Bank_Statement_Inflow_Cr"] = float(nums[-1]) if nums else 100.0
 
     result = {
@@ -622,8 +639,21 @@ IMPORTANT RULES:
 - When calling run_xgboost_scorer, pass the features_json (output of extract_numerical_features).
 - When calling generate_cam_report, pass ALL previous outputs as arguments.
 
-The user has already uploaded documents and provided company details. Begin analysis
-when the user asks you to start.
+ROBUSTNESS & UNIT CONVERSION:
+- Always check financial units. Our ML model expects values in **CRORES (Cr)**.
+- If documents mention "Lakhs", convert them: Value in Cr = (Value in Lakhs / 100).
+- If the user provides a raw number like "150 lakhs", convert it to "1.5" before calling tools.
+- Be extra careful with OCR mishaps — if a number looks suspiciously small or large, ask the human for verification.
+
+
+CRITICAL: Before starting any analysis, check the Context for missing information. If information is missing, you MUST ask for it before proceeding with tools:
+- If "Company Name" or "Application No" is blank -> Request "Application Details" (Company Name, App No).
+- If "PDF Text Available: No" -> Request "Document Ingestion" (PDFs, CIBIL, Bank Statements).
+- If "Officer Insights: None provided" -> Request "Officer Insights" (Manual notes or uploaded report).
+
+If any of these are missing, your first reply MUST be: "⚠️ **Action Required:** To begin the analysis, please provide the following missing inputs via the sidebar and click **Submit to Agent**:\n\n[List specifically what is missing from the 3 categories above]\n\nI'll be ready to start once these are received!" Do NOT attempt to run any tools until the basic context is complete.
+
+Begin analysis when the user asks you to start and all 3 categories of documents are ready.
 """
 
 ALL_TOOLS = [
