@@ -51,6 +51,31 @@ def apply_custom_css():
             font-family: 'Inter', sans-serif;
         }
 
+        /* ── INCREASE ALL FONT SIZES ── */
+        [data-testid="stMarkdownContainer"] p, 
+        [data-testid="stMarkdownContainer"] li {
+            font-size: 1.15rem !important;
+            line-height: 1.6 !important;
+        }
+        [data-testid="stWidgetLabel"] p {
+            font-size: 1.15rem !important;
+            margin-bottom: 0.5rem !important;
+        }
+        h1 { font-size: 3rem !important; }
+        h2 { font-size: 2.5rem !important; }
+        h3 { font-size: 2rem !important; }
+        h4 { font-size: 1.6rem !important; }
+        
+        /* The slider values and small text */
+        .st-emotion-cache-1629p8f h1, 
+        [data-testid="stCaptionContainer"] p {
+            font-size: 1.05rem !important;
+        }
+        .stCode code {
+            font-size: 1.1rem !important;
+            line-height: 1.5 !important;
+        }
+
         /* Gradient Title */
         .main-title {
             font-family: 'Outfit', sans-serif;
@@ -58,7 +83,7 @@ def apply_custom_css():
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             text-align: center;
-            font-size: 4rem;
+            font-size: 4rem !important;
             font-weight: 800;
             margin-bottom: 0;
             line-height: 1.1;
@@ -187,6 +212,7 @@ def init_session_state():
         "waiting_for_human": False,  # True when graph is interrupted
         "interrupt_data": None,      # The interrupt payload
         "agent_running": False,
+        "base_premium": 8.5,         # Base interest rate premium (%)
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -323,10 +349,12 @@ def run_agent(user_input=None, resume_value=None):
         agent_input = Command(resume=resume_value)
     else:
         # Build the context message for the agent
+        base_premium = st.session_state.get("base_premium", 8.5)
         context = (
             f"Company Name: {st.session_state.company_name}\n"
             f"Officer Insights: {st.session_state.manual_entry or 'None provided'}\n"
             f"PDF Text Available: {'Yes' if st.session_state.pdf_extracted_text else 'No'}\n"
+            f"Base Interest Rate Premium: {base_premium}%\n"
         )
         if st.session_state.pdf_extracted_text:
             # Truncate for the message but full text goes to the tool
@@ -459,15 +487,47 @@ def render_dashboard():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    with st.container(border=True):
-        st.subheader("⚙️ Application Analysis Center")
-        st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_btn_1, col_btn_2, col_btn_3 = st.columns([1, 2, 1])
-        with col_btn_2:
+    # ── Credit Policy Settings ──
+    col_settings, col_action = st.columns([1, 1])
+
+    with col_settings:
+        with st.container(border=True):
+            st.subheader("🎛️ Credit Policy Settings")
+            st.caption("Configure base parameters used in credit decision calculations")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            base_premium = st.slider(
+                "📈 Base Interest Rate Premium (%)",
+                min_value=5.0,
+                max_value=15.0,
+                value=st.session_state.base_premium,
+                step=0.25,
+                help="The base interest rate before adding risk and age premiums. "
+                     "Formula: Interest Rate = Base Premium + Risk Premium (CIBIL) + Age Premium"
+            )
+            st.session_state.base_premium = base_premium
+
+            # Show the formula breakdown
+            st.markdown("---")
+            st.markdown("**📐 Interest Rate Formula:**")
+            st.code(
+                f"Interest Rate = {base_premium}% (Base)\n"
+                f"              + Risk Premium  ((900 - CIBIL) / 100 × 0.5)\n"
+                f"              + Age Premium   (1.5% if Company Age ≤ 5 yrs)",
+                language="text"
+            )
+            st.caption(f"✅ Current Base Premium: **{base_premium}%**")
+
+    with col_action:
+        with st.container(border=True):
+            st.subheader("⚙️ Application Analysis Center")
+            st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🚀 New Application Analysis 🚀", type="primary", use_container_width=True):
                 switch_page("analysis")
-        st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────
