@@ -438,7 +438,7 @@ def run_agent(user_input=None, resume_value=None):
 # VIEW 1: Login
 # ──────────────────────────────────────────────
 def render_login():
-    st.markdown("<h1 class='main-title'>CREDI-MITRA</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-title' style='font-size: 4rem;'>CREDI-MITRA</h1>", unsafe_allow_html=True)
     st.markdown("<p class='sub-title'>AI-Powered Corporate Credit Analyst Agent</p>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -464,36 +464,53 @@ def render_login():
 # VIEW 2: Dashboard
 # ──────────────────────────────────────────────
 def render_dashboard():
-    col_head, col_logout = st.columns([4, 1])
+    st.markdown("<h1 class='main-title' style='font-size: 3.5rem;'>CREDI-MITRA</h1>", unsafe_allow_html=True)
+    st.markdown("<p class='sub-title'>Portfolio Overview & Policy Management</p>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col_head, col_logout = st.columns([6, 1])
     with col_head:
         st.header("📊 Dashboard")
     with col_logout:
-        if st.button("🚪 Log Out"):
+        st.write("")
+        if st.button("🚪 Log Out", use_container_width=True):
             st.session_state.logged_in = False
             switch_page("login")
 
     st.markdown("---")
 
+    st.info("👋 **Welcome back, Admin.** Here is a quick snapshot of the corporate credit portfolio.")
+
     col1, col2, col3 = st.columns(3)
     with col1:
         with st.container(border=True):
-            st.metric(label="Active Applications", value="12", delta="+2 this week")
+            st.metric(label="📄 Active Applications", value="12", delta="+2 this week")
     with col2:
         with st.container(border=True):
-            st.metric(label="Accepted (MTD)", value="45", delta="15% vs Last Mo.")
+            st.metric(label="✅ Accepted (MTD)", value="45", delta="15% vs Last Mo.")
     with col3:
         with st.container(border=True):
-            st.metric(label="Rejected (MTD)", value="8", delta="-2% vs Last Mo.", delta_color="inverse")
+            st.metric(label="❌ Rejected (MTD)", value="8", delta="-2% vs Last Mo.", delta_color="inverse")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Credit Policy Settings ──
-    col_settings, col_action = st.columns([1, 1])
+    # ── Credit Policy Settings & Actions ──
+    col_action, col_settings = st.columns([1.1, 1.4])
+
+    with col_action:
+        with st.container(border=True):
+            st.subheader("⚡ Quick Actions")
+            st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🚀 Start New Application Analysis", type="primary", use_container_width=True):
+                switch_page("analysis")
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.success("🤖 **System Status:**\n\n✅ LLM Orchestrator Online\n\n✅ XGBoost Engine Ready")
 
     with col_settings:
         with st.container(border=True):
-            st.subheader("🎛️ Credit Policy Settings")
-            st.caption("Configure base parameters used in credit decision calculations")
+            st.subheader("🎛️ Credit Policy Parameters")
+            st.caption("Configure base parameters used in dynamic credit decisioning")
             st.markdown("<br>", unsafe_allow_html=True)
 
             base_premium = st.slider(
@@ -502,32 +519,19 @@ def render_dashboard():
                 max_value=15.0,
                 value=st.session_state.base_premium,
                 step=0.25,
-                help="The base interest rate before adding risk and age premiums. "
-                     "Formula: Interest Rate = Base Premium + Risk Premium (CIBIL) + Age Premium"
+                help="The base interest rate before adding risk and age premiums."
             )
             st.session_state.base_premium = base_premium
 
             # Show the formula breakdown
             st.markdown("---")
-            st.markdown("**📐 Interest Rate Formula:**")
+            st.markdown("**📐 Interest Rate Calculation Formula:**")
             st.code(
-                f"Interest Rate = {base_premium}% (Base)\n"
-                f"              + Risk Premium  ((900 - CIBIL) / 100 × 0.5)\n"
-                f"              + Age Premium   (1.5% if Company Age ≤ 5 yrs)",
+                f"Rate = {base_premium}% (Base Premium)\n"
+                f"       + Risk Premium ((900 - CIBIL) / 100 × 0.5)\n"
+                f"       + Age Premium  (1.5% if Company Age ≤ 5 yrs)",
                 language="text"
             )
-            st.caption(f"✅ Current Base Premium: **{base_premium}%**")
-
-    with col_action:
-        with st.container(border=True):
-            st.subheader("⚙️ Application Analysis Center")
-            st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🚀 New Application Analysis 🚀", type="primary", use_container_width=True):
-                switch_page("analysis")
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown("<br>", unsafe_allow_html=True)
 
 
 # ──────────────────────────────────────────────
@@ -647,8 +651,8 @@ def render_analysis():
             switch_page("dashboard")
 
     # ── Main Area: Chat Interface ──
-    st.markdown("<h1 class='main-title' style='font-size: 3rem;'>CREDI-MITRA AI AGENT</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-title'>LLM-Orchestrated Credit Appraisal System</p>", unsafe_allow_html=True)
+    st.markdown("<h1 class='main-title' style='font-size: 3.5rem;'>CREDI-MITRA</h1>", unsafe_allow_html=True)
+    st.markdown("<p class='sub-title'>LLM-Orchestrated Credit Appraisal Console</p>", unsafe_allow_html=True)
 
     # Render all messages
     for msg in st.session_state.messages:
