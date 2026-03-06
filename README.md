@@ -21,7 +21,7 @@
 
 ## 📖 About
 
-**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). It ingests multi-format data (**PDF, CSV, XLSX**), conducts deep secondary web research (DuckDuckGo & BeautifulSoup), and leverages an XGBoost ML model to recommend whether to lend, an optimal credit limit, and the risk premium.
+**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). It ingests multi-format data (**PDF, CSV, XLSX**), conducts real-time secondary research via the **Tavily AI Search Engine**, and leverages a pre-trained **XGBoost** model to recommend credit limits and risk-adjusted interest rates.
 
 > **💡 Core Innovation:** Instead of a fixed pipeline, an LLM Agent dynamically decides what to do next, asks the analyst for help when data is ambiguous, and shows every intermediate step transparently in a chat environment.
 
@@ -40,34 +40,36 @@ flowchart TD
     %% Global Style
     classDef default font-size:16px,padding:15px;
     
-    %% Nodes
-    A["🧠 <b>LLM ORCHESTRATOR</b><br/>Llama 3.1 • 8B • Groq<br/><i>Thinks → Plans → Executes</i>"]
+    %% Input Layer
+    IN[["📁 <b>INPUT DATA</b><br/>PDF • CSV • XLSX<br/>Officer Notes"]]
     
-    subgraph ToolSuite ["<b>TOOL SUITE</b>"]
-        direction LR
-        B(["📄 extract_pdf_data"])
-        C(["🔍 crawl_web_for_litigation"])
-        D(["📊 extract_numerical_features"])
-        E(["🤖 run_xgboost_scorer"])
+    %% Orchestration Layer
+    A["🧠 <b>LLM ORCHESTRATOR</b><br/>Llama 3.1 • 8B • Groq<br/><i>ReAct Agentic Workspace</i>"]
+    
+    subgraph ToolSuite ["<b>INTELLIGENCE TOOLS</b>"]
+        direction TB
+        B(["📄 <b>Data Ingestion</b><br/>Extract Multi-format Text"])
+        C(["🔍 <b>Tavily Search</b><br/>Litigation & News Sentiment"])
+        D(["📊 <b>Feature Engine</b><br/>HITL Missing Data Collector"])
+        E(["🤖 <b>ML Scorer</b><br/>XGBoost Classification"])
+        G(["📋 <b>CAM Engine</b><br/>Report Synthesis"])
     end
     
     subgraph UI ["<b>HUMAN-IN-THE-LOOP</b>"]
-        H{{"👤 <b>ANALYST</b><br/>• Ambiguous company?<br/>• Missing CIBIL? <br/>• Missing Revenue?"}}
+        H{{"👤 <b>CREDIT ANALYST</b><br/>• Clarify Ambiguities<br/>• Input Missing Metrics"}}
     end
 
-    F{{"📄 <b>final_cam_report</b>"}}
+    F{{"📄 <b>CREDIT MEMO (PDF)</b><br/>The Final CAM Report"}}
 
     %% Flow
-    A ==>|" Calls"| B
-    A ==>|" Calls"| C
-    A ==>|" Calls"| D
-    A ==>|" Calls"| E
+    IN ==> A
+    A ==>|"Decides Plan"| ToolSuite
     
-    C -.->|" Pauses on ambiguity"| H
-    D -.->|" Pauses on missing data"| H
-    H -.->|" Resumes with input"| A
+    C -.->|"Ambiguity Pause"| H
+    D -.->|"Data Gap Pause"| H
+    H -.->|"Resume Analysis"| A
     
-    B & C & D & E ===>|" Synthesizes Data"| F
+    ToolSuite ===>|"Final Synthesis"| F
 
     %% Styling
     style A fill:#667eea,stroke:#fff,stroke-width:3px,color:#fff,font-weight:bold
@@ -75,6 +77,7 @@ flowchart TD
     style UI fill:#2a1b2e,stroke:#ff6b6b,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
     style H fill:#4a1e35,stroke:#ff6b6b,stroke-width:2px,color:#fff
     style F fill:#141423,stroke:#667eea,stroke-width:3px,color:#fff,font-weight:bold
+    style IN fill:#34d399,stroke:#fff,stroke-width:2px,color:#000,font-weight:bold
 ```
 
 </div>
@@ -180,14 +183,13 @@ CREDI-MITRA/
 └── README.md
 ```
 
-## 🔮 Future scope
+## 🔮 Future Roadmap
 
-- [ ] Multi-model support — Groq / Ollama (local) / Gemini
-- [ ] Live web search via Tavily API integration
-- [ ] Structured PDF parsing with LlamaParse
-- [ ] Enhanced ML — dynamic interest rates & rejection reasons
-- [ ] Compliance audit trail — persist agent logs
-- [ ] Voice-driven appraisal via LiveKit
+- [ ] Multi-model support — Llama-3-70B / Gemini Pro / Ollama
+- [ ] Structured OCR with **LlamaParse** or **Unstructured.io**
+- [ ] Compliance audit trail — persistent agent trace logs
+- [ ] Voice-driven appraisal via **LiveKit** integration
+- [ ] Direct bank API integrations
 
 <br/>
 
