@@ -35,7 +35,7 @@
 
 <div align="center">
 
-![System Architecture](system_architecture.png)
+![System Architecture](media/system_architecture.jpg)
 
 </div>
 
