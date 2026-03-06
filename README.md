@@ -11,15 +11,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-ReAct_Agent-7C3AED?style=for-the-badge)](https://langchain-ai.github.io/langgraph/)
 [![XGBoost](https://img.shields.io/badge/XGBoost-97%25_Accuracy-006600?style=for-the-badge)](https://xgboost.readthedocs.io/)
 
-<br/>
 
-<img src="https://img.shields.io/badge/Status-Active_Development-brightgreen?style=flat-square" />
-<img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" />
-<img src="https://img.shields.io/badge/Architecture-LLM_Orchestrator-purple?style=flat-square" />
-
-</div>
-
-<br/>
 
 ---
 
@@ -27,7 +19,7 @@
 
 ## 📖 About
 
-**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). The solution ingests multi-source data (Databricks), performs deep "web-scale" secondary research, and synthesizes primary due diligence into a final recommendation (ML based) on whether to lend, what the limit should be, and at what risk premium.
+**CREDI-MITRA** is an AI-powered Credit Decisioning Engine that automates the end-to-end preparation of a Comprehensive Credit Appraisal Memo (CAM). The solution ingests multi-source unstructured document data (PDFs via pypdf), performs deep "web-scale" secondary research using web scraping (DuckDuckGo & BeautifulSoup), and synthesizes primary due diligence into a final recommendation using a pre-trained XGBoost Machine Learning model on whether to lend, what the limit should be, and at what risk premium.
 
 <br/>
 
