@@ -236,6 +236,7 @@ Your goal is to complete a CAM report by using tools in this order:
 IMPORTANT:
 - Use currency unit as CRORES (Cr).
 - Ask for missing data exactly as requested by tools via interrupt.
+- When the user tells you they have successfully uploaded documents, enthusiastically confirm receipt of the specific documents they mentioned, list them, and ask: "Shall I proceed with the analysis using my Credit Engine tools?" Wait for them to say yes before continuing.
 - Context provided below: {context}
 """
 
@@ -312,21 +313,35 @@ def render_analysis():
         notes = st.text_area("Officer Notes")
         if st.button("🚀 Submit to Agent", type="primary", use_container_width=True):
             text = ""
+            doc_names = []
             for f in files:
+                doc_names.append(f.name)
                 if f.type == "application/pdf":
                     reader = PdfReader(io.BytesIO(f.read()))
                     text += "".join([p.extract_text() for p in reader.pages])
                 else: 
                     text += f"\n---\n{f.name} Data: " + pd.read_csv(f).to_string() if f.name.endswith(".csv") else ""
+            if notes: doc_names.append("Officer Notes")
             st.session_state.pdf_text = text
             st.session_state.officer_notes = notes
-            st.success("Documents Ingested!")
+            
+            prompt = f"I have submitted the application for '{st.session_state.company_name}' (App No: {st.session_state.app_no}). I uploaded: {', '.join(doc_names) if doc_names else 'Nothing'}. Please confirm receipt and ask if you should proceed."
+            st.session_state.auto_submit = prompt
+            st.rerun()
 
     # Chat
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
             if m.get("tool_data") and st.expander("Details"): st.write(m["tool_data"])
+
+    if st.session_state.get("auto_submit"):
+        prompt = st.session_state.auto_submit
+        st.session_state.auto_submit = None
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"): st.markdown(prompt)
+        with st.chat_message("assistant"): run_agent_main(user_input=prompt)
+        st.rerun()
 
     if prompt := st.chat_input("Analyze..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
