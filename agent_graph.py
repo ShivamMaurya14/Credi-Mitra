@@ -662,6 +662,11 @@ CRITICAL: Before starting any analysis, check the Context for missing informatio
 
 If any of these are missing, your first reply MUST be: "⚠️ **Action Required:** To begin the analysis, please provide the following missing inputs via the sidebar and click **Submit to Agent**:\n\n[List specifically what is missing from the 3 categories above]\n\nI'll be ready to start once these are received!" Do NOT attempt to run any tools until the basic context is complete.
 
+When the user tells you they have successfully uploaded documents, you must:
+1. Enthusiastically confirm receipt of the specific documents they mentioned.
+2. End your message by asking: "Shall I proceed with the analysis using my Credit Engine tools?"
+3. Wait for the user to say yes/proceed before calling ANY tools.
+
 Begin analysis when the user asks you to start and all 3 categories of documents are ready.
 """
 

@@ -604,8 +604,10 @@ def render_analysis():
 
             saved_count = 0
             extracted_text = ""
+            uploaded_doc_names = []
             for section_name, uploaded_file in file_map.items():
                 if uploaded_file is not None:
+                    uploaded_doc_names.append(section_name.replace("_", " "))
                     ext = os.path.splitext(uploaded_file.name)[1]
                     save_path = os.path.join(save_dir, f"{section_name}{ext}")
                     file_bytes = uploaded_file.getbuffer()
@@ -642,24 +644,17 @@ def render_analysis():
                 with open(save_path, "w") as f:
                     f.write(manual_entry.strip())
                 saved_count += 1
+                uploaded_doc_names.append("Officer Manual Notes")
 
             if saved_count > 0:
                 st.success(f"✅ {saved_count} document(s) uploaded and extracted.")
 
-            # Add welcome message and clear history for fresh analysis
+            # Automatically trigger the agent to acknowledge receipt instead of fake message
             st.session_state.messages = []
-            add_message(
-                "assistant",
-                f"✅ **Documents ready for {company_name}!** (App No: {app_no})\n\n"
-                f"I am now ready to perform the Credit Appraisal. My workflow includes:\n\n"
-                f"1. 📄 **Document Analysis** — Financial extraction from PDFs\n"
-                f"2. 🔍 **External Verification** — Web search for NCLT cases & News\n"
-                f"3. 📊 **Feature Synthesis** — Normalizing data (Currency conversions, etc.)\n"
-                f"4. 🤖 **Risk Scoring** — Running the XGBoost ML Engine\n"
-                f"5. 📋 **Memo Generation** — Producing the final CAM report\n\n"
-                f"**Type \"start analysis\" below to begin.**",
-                avatar="🧠"
-            )
+            doc_list_str = ", ".join(uploaded_doc_names) if uploaded_doc_names else "No documents"
+            prompt = f"I have submitted the application for '{company_name}' (App No: {app_no}). I uploaded the following documents: {doc_list_str}. \n\nPlease confirm receipt of these documents, list them back to me, and ask if you should proceed with the analysis."
+            st.session_state.auto_submit_prompt = prompt
+
             st.rerun()
 
         st.markdown("---")
@@ -708,6 +703,23 @@ def render_analysis():
             else:
                 with st.chat_message("assistant"):
                     st.markdown(content)
+
+    # ── Auto-run agent on submit ──
+    if st.session_state.get("auto_submit_prompt"):
+        prompt = st.session_state.auto_submit_prompt
+        st.session_state.auto_submit_prompt = None
+        
+        # Add the prompt to history
+        add_message("user", prompt)
+        with st.chat_message("user"):
+            st.markdown(prompt)
+            
+        with st.chat_message("assistant", avatar="🧠"):
+            with st.status("🧠 Analyzing ingestion...", expanded=True) as status:
+                st.write("Confirming receipt of documents...")
+                run_agent(user_input=prompt)
+                status.update(label="✅ Ready to proceed!", state="complete")
+        st.rerun()
 
     # ── Chat Input ──
     if prompt := st.chat_input("Type here to interact with the AI Agent..."):
