@@ -235,17 +235,23 @@ def extract_numerical_features(
 
     # Try parsing the PDF summary
     pdf_data = {}
-    try:
-        pdf_data = json.loads(pdf_summary) if isinstance(pdf_summary, str) else pdf_summary
-    except (json.JSONDecodeError, TypeError):
-        pass
+    if isinstance(pdf_summary, str):
+        try:
+            pdf_data = json.loads(pdf_summary.replace("'", '"'))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    elif isinstance(pdf_summary, dict):
+        pdf_data = pdf_summary
 
     # Try parsing web research
     web_data = {}
-    try:
-        web_data = json.loads(web_research) if isinstance(web_research, str) else web_research
-    except (json.JSONDecodeError, TypeError):
-        pass
+    if isinstance(web_research, str):
+        try:
+            web_data = json.loads(web_research.replace("'", '"'))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    elif isinstance(web_research, dict):
+        web_data = web_research
 
     key_numbers = pdf_data.get("key_numbers_extracted", {})
 

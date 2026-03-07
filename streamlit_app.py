@@ -125,8 +125,18 @@ def crawl_web_for_litigation(company_name: str) -> str:
 def extract_numerical_features(pdf_summary: str, web_research: str, company_name: str) -> str:
     """Normalize data into 6 numerical features. Interrupts for missing data."""
     features = {}
-    pdf_data = json.loads(pdf_summary) if isinstance(pdf_summary, str) else pdf_summary
-    web_data = json.loads(web_research) if isinstance(web_research, str) else web_research
+    pdf_data = {}
+    if isinstance(pdf_summary, str):
+        try: pdf_data = json.loads(pdf_summary.replace("'", '"'))
+        except: pass
+    elif isinstance(pdf_summary, dict): pdf_data = pdf_summary
+
+    web_data = {}
+    if isinstance(web_research, str):
+        try: web_data = json.loads(web_research.replace("'", '"'))
+        except: pass
+    elif isinstance(web_research, dict): web_data = web_research
+
     key_numbers = pdf_data.get("key_numbers_extracted", {})
 
     features["Company_Age"] = key_numbers.get("Company_Age")
