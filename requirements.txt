@@ -6,6 +6,7 @@ python-dotenv>=1.0.0
 # LangChain / LangGraph (LLM Orchestrator)
 langchain-core>=0.3.0
 langchain-groq>=1.0.0
+langchain-google-genai>=2.0.0
 langgraph>=0.2.60
 
 # ML & Data
@@ -15,8 +16,12 @@ numpy>=1.24.0
 scikit-learn>=1.3.0
 
 # PDF Processing
+pdfplumber>=0.10.0
 pypdf>=4.0.0
 fpdf2>=2.7.0
+python-docx>=1.1.0
+llama-parse>=0.5.0
+nest-asyncio>=1.6.0
 
 # Utilities
 pydantic>=2.0.0

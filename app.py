@@ -20,7 +20,12 @@ import numpy as np
 from fpdf import FPDF
 from dotenv import load_dotenv
 from pypdf import PdfReader
+import pdfplumber
+import docx
 from langgraph.types import interrupt, Command
+import nest_asyncio
+nest_asyncio.apply()
+from llama_parse import LlamaParse
 
 load_dotenv()
 
@@ -213,6 +218,8 @@ def init_session_state():
         "interrupt_data": None,      # The interrupt payload
         "agent_running": False,
         "base_premium": 8.5,         # Base interest rate premium (%)
+        "selected_model": "gemini-1.5-pro (Google)",
+        "selected_analysis_model": "gemini-1.5-pro (Google)",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -230,7 +237,14 @@ def switch_page(page_name):
 
 
 def add_message(role, content, **kwargs):
-    """Add a message to session state."""
+    """Add a message to session state with simple consecutive deduplication."""
+    if st.session_state.messages:
+        last = st.session_state.messages[-1]
+        if (last["role"] == role and 
+            last["content"] == content and 
+            last.get("type") == kwargs.get("type")):
+            return
+            
     msg = {"role": role, "content": content}
     msg.update(kwargs)
     st.session_state.messages.append(msg)
@@ -239,7 +253,9 @@ def add_message(role, content, **kwargs):
 def render_tool_output(tool_name, tool_data):
     """Render a tool's output as an expandable section in the chat."""
     icon_map = {
-        "extract_pdf_data": "📄",
+        "list_uploaded_documents": "📂",
+        "analyze_document": "📄",
+        "extract_pdf_data": "📑",
         "crawl_web_for_litigation": "🔍",
         "extract_numerical_features": "📊",
         "run_xgboost_scorer": "🤖",
@@ -247,7 +263,7 @@ def render_tool_output(tool_name, tool_data):
     }
     icon = icon_map.get(tool_name, "🔧")
 
-    with st.expander(f"{icon} Tool Output: `{tool_name}`", expanded=True):
+    with st.expander(f"{icon} Output from `{tool_name}`", expanded=True):
         if isinstance(tool_data, str):
             try:
                 parsed = json.loads(tool_data)
@@ -293,7 +309,7 @@ def generate_cam_pdf(cam_text):
             heading = line.lstrip("#").strip().replace("**", "")
             pdf.set_font("Helvetica", "B", 13)
             pdf.set_text_color(60, 80, 160)
-            pdf.multi_cell(0, 8, heading)
+            pdf.multi_cell(0, 8, heading, wrapmode="CHAR")
             pdf.ln(2)
         elif line == "---":
             pdf.ln(2)
@@ -306,18 +322,18 @@ def generate_cam_pdf(cam_text):
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
             pdf.set_x(pdf.l_margin + 4)
-            pdf.multi_cell(pdf.w - pdf.l_margin - pdf.r_margin - 4, 6, "  " + text)
+            pdf.multi_cell(0, 6, "  " + text, wrapmode="CHAR")
             pdf.ln(1)
         elif line.startswith("|"):
             text = line.replace("**", "")
             pdf.set_font("Helvetica", "", 9)
             pdf.set_text_color(70, 70, 70)
-            pdf.multi_cell(0, 5, text)
+            pdf.multi_cell(0, 5, text, wrapmode="CHAR")
         else:
             text = line.replace("**", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
-            pdf.multi_cell(0, 6, text)
+            pdf.multi_cell(0, 6, text, wrapmode="CHAR")
             pdf.ln(1)
 
     return bytes(pdf.output())
@@ -335,13 +351,54 @@ def run_agent(user_input=None, resume_value=None):
     - On resume: continues from the interrupt with the user's answer
     """
     # Build agent if not cached
+    selected_name = st.session_state.get("selected_model", "llama-3.3-70b-versatile (Groq)")
     if st.session_state.agent is None:
-        agent, checkpointer = build_agent()
-        st.session_state.agent = agent
+        try:
+            import importlib
+            import agent_graph as _ag_module
+            importlib.reload(_ag_module)
+            # Inject the upload directory into the module for thread-safe access by tools
+            _ag_module.RELIABLE_UPLOAD_DIR = st.session_state.get("current_upload_dir")
+            agent, checkpointer = _ag_module.build_agent(selected_name)
+            st.session_state.agent = agent
+        except Exception as e:
+            err_str = str(e).lower()
+            is_quota_error = any(k in err_str for k in ["rate_limit", "429", "quota", "resource_exhausted"])
+            if is_quota_error:
+                st.warning("⚠️ Primary model quota reached. Falling back to Gemini...")
+                try:
+                    agent, checkpointer = _ag_module.build_agent("gemini (Google)")
+                    st.session_state.agent = agent
+                    st.success("✅ Successfully switched to Gemini fallback engine.")
+                except Exception as gemini_err:
+                    st.error(
+                        f"❌ Both Groq and Gemini are unavailable.\n\n"
+                        f"**Groq Error:** {e}\n\n"
+                        f"**Gemini Error:** {gemini_err}\n\n"
+                        "⏳ Please wait a few minutes and try again, or enable billing on Google AI Studio."
+                    )
+                    return
+            else:
+                st.error(f"Failed to build agent: {e}")
+                return
+
+    if not st.session_state.get("thread_id"):
         st.session_state.thread_id = str(uuid.uuid4())
 
     agent = st.session_state.agent
-    config = {"configurable": {"thread_id": st.session_state.thread_id}}
+    
+    # Refresh the reliable directory cache for the modules' tools
+    import agent_graph as _ag_module
+    _ag_module.RELIABLE_UPLOAD_DIR = st.session_state.get("current_upload_dir")
+    _ag_module.RELIABLE_MODEL_NAME = st.session_state.get("selected_model")
+    _ag_module.RELIABLE_ANALYSIS_MODEL = st.session_state.get("selected_analysis_model")
+    
+    config = {
+        "configurable": {
+            "thread_id": st.session_state.thread_id,
+            "upload_dir": st.session_state.get("current_upload_dir", "")
+        }
+    }
 
     # Prepare input
     if resume_value is not None:
@@ -350,18 +407,55 @@ def run_agent(user_input=None, resume_value=None):
     else:
         # Build the context message for the agent
         base_premium = st.session_state.get("base_premium", 8.5)
-        context = (
-            f"Company Name: {st.session_state.company_name}\n"
-            f"Application No: {st.session_state.app_no}\n"
-            f"Officer Insights: {st.session_state.manual_entry or 'None provided'}\n"
-            f"PDF Text Available: {'Yes' if st.session_state.pdf_extracted_text else 'No'}\n"
-            f"Base Interest Rate Premium: {base_premium}%\n"
-        )
-        if st.session_state.pdf_extracted_text:
-            # Truncate for the message but full text goes to the tool
-            context += f"PDF Text Length: {len(st.session_state.pdf_extracted_text)} characters\n"
+        
+        comp_name = st.session_state.get("company_name", "").strip()
+        app_num = st.session_state.get("app_no", "").strip()
+        upload_dir = st.session_state.get("current_upload_dir")
 
-        full_message = f"{user_input}\n\nContext:\n{context}"
+        # Proactive recovery: always prefer name from directory if it matches the pattern
+        if upload_dir and os.path.exists(upload_dir):
+            folder_name = os.path.basename(upload_dir)
+            if "_" in folder_name:
+                # Extract everything before the last underscore as the name
+                recovered_name = folder_name.rsplit("_", 1)[0].replace("_", " ")
+                # If current name is blank or just looks like an ID, use recovered name
+                if not comp_name or comp_name.isdigit() or comp_name == app_num:
+                    comp_name = recovered_name
+        
+        # Ensure any underscores in existing name are also cleared
+        comp_name = comp_name.replace("_", " ")
+
+        officer_status = "None provided"
+        if st.session_state.get("manual_entry") and st.session_state.manual_entry.strip():
+            officer_status = st.session_state.manual_entry
+        elif st.session_state.get("document_extracted_text") and "--- Document: Officer Insights Report" in st.session_state.document_extracted_text:
+            officer_status = "Provided via uploaded document."
+        elif upload_dir and os.path.exists(upload_dir) and "Officer_Insights_Report.pdf" in os.listdir(upload_dir):
+            officer_status = "Provided via uploaded document (Officer_Insights_Report.pdf found)."
+
+        doc_text_status = "No"
+        if upload_dir and os.path.exists(upload_dir) and len([f for f in os.listdir(upload_dir) if not f.startswith(".")]) > 0:
+            doc_text_status = "Yes"
+        elif st.session_state.get("document_extracted_text") and len(st.session_state.document_extracted_text.strip()) > 0:
+            doc_text_status = "Yes"
+        else:
+            tid = st.session_state.get("thread_id")
+            if tid:
+                b_path = os.path.join("temp_storage", f"{tid}.txt")
+                if os.path.exists(b_path) and os.path.getsize(b_path) > 0:
+                    doc_text_status = "Yes"
+
+        context_block = f"""
+### SYSTEM VERIFIED CONTEXT (MANDATORY)
+- **Company Name**: {comp_name}
+- **Application No**: {app_num}
+- **Officer Insights**: {officer_status}
+- **Document Text Available**: {doc_text_status}
+- **Base Interest Rate Premium**: {base_premium}%
+"""
+        
+        # Do not append the entire extracted text to the prompt to save LLM tokens.
+        full_message = f"{user_input}\n\n{context_block}"
         agent_input = {"messages": [{"role": "user", "content": full_message}]}
 
     # Stream the agent execution
@@ -380,14 +474,31 @@ def run_agent(user_input=None, resume_value=None):
                         st.session_state.waiting_for_human = True
                         st.session_state.interrupt_data = interrupt_value
 
-                        # Display the question from the tool
-                        question = ""
-                        if isinstance(interrupt_value, dict):
-                            question = interrupt_value.get("question", str(interrupt_value))
+                        # ── Distinguish Step Review vs HITL Data Request ──
+                        if isinstance(interrupt_value, dict) and interrupt_value.get("type") == "step_review":
+                            step_num = interrupt_value.get("step_number", "?")
+                            tool_nm = interrupt_value.get("tool_name", "Tool")
+                            # Extract bullet lines from the question
+                            q = interrupt_value.get("question", "")
+                            step_msg = (
+                                f"✅ **Step {step_num}/5 — {tool_nm} Complete**\n\n"
+                                + "\n".join(
+                                    line for line in q.split("\n")
+                                    if line.strip().startswith("•") or "Finding" in line or ":" in line
+                                )
+                                + "\n\n---\n💬 Type **`continue`** to proceed to the next step, "
+                                "or describe a correction (e.g. `CIBIL is 780, not 650`)."
+                            )
+                            add_message("assistant", step_msg, type="step_review")
                         else:
-                            question = str(interrupt_value)
+                            # Standard HITL question (missing data, ambiguity)
+                            question = ""
+                            if isinstance(interrupt_value, dict):
+                                question = interrupt_value.get("question", str(interrupt_value))
+                            else:
+                                question = str(interrupt_value)
+                            add_message("assistant", question, type="interrupt")
 
-                        add_message("assistant", question, type="interrupt")
                         st.session_state.agent_running = False
                         return  # Stop — wait for user input
 
@@ -400,7 +511,7 @@ def run_agent(user_input=None, resume_value=None):
 
                         add_message(
                             "assistant",
-                            f"🔧 **Tool `{tool_name}` executed.**",
+                            f"**Tool `{tool_name}` executed by `{st.session_state.get('selected_analysis_model')}`.**",
                             type="tool_call",
                             tool_name=tool_name,
                             tool_data=tool_content
@@ -415,16 +526,23 @@ def run_agent(user_input=None, resume_value=None):
                     # Agent's reasoning / response messages
                     messages = node_data.get("messages", [])
                     for msg in messages:
-                        content = msg.content if hasattr(msg, 'content') else str(msg)
+                        raw_content = msg.content if hasattr(msg, 'content') else str(msg)
+                        
+                        # Handle List-based content (Gemini/Vertex AI multi-part format)
+                        if isinstance(raw_content, list):
+                            content = "".join([part.get("text", "") if isinstance(part, dict) else str(part) for part in raw_content])
+                        else:
+                            content = str(raw_content)
+
                         # Skip empty content or pure tool-call messages
-                        if content and not getattr(msg, 'tool_calls', None):
+                        if content.strip() and not getattr(msg, 'tool_calls', None):
                             add_message("assistant", content, type="reasoning")
                         elif getattr(msg, 'tool_calls', None):
                             for tc in msg.tool_calls:
                                 tool_name = tc.get("name", "unknown")
                                 add_message(
                                     "assistant",
-                                    f"🧠 **Calling tool:** `{tool_name}`...",
+                                    f"**Orchestrator (`{st.session_state.get('selected_model')}`) calling tool:** `{tool_name}`...",
                                     type="tool_invoke"
                                 )
 
@@ -541,26 +659,79 @@ def render_dashboard():
 def render_analysis():
     # ── Sidebar: Document Ingestion ──
     with st.sidebar:
+        with st.expander("🚀 Agent Configuration", expanded=True):
+            model_choices = [
+                "llama-3.3-70b-versatile (Groq)",
+                "llama-3.1-8b-instant (Groq)",
+                "allam-2-7b (Groq)",
+                "groq/compound (Groq)",
+                "groq/compound-mini (Groq)",
+                "meta-llama/llama-4-maverick-17b-128e-instruct (Groq)",
+                "meta-llama/llama-4-scout-17b-16e-instruct (Groq)",
+                "meta-llama/llama-guard-4-12b (Groq)",
+                "moonshotai/kimi-k2-instruct (Groq)",
+                "moonshotai/kimi-k2-instruct-0905 (Groq)",
+                "openai/gpt-oss-120b (Groq)",
+                "openai/gpt-oss-20b (Groq)",
+                "qwen/qwen3-32b (Groq)",
+                "gemini-2.5-flash (Google)",
+                "gemini-1.5-pro (Google)"
+            ]
+            
+            # 1. Orchestrator Model
+            current_stored = st.session_state.get("selected_model")
+            try:
+                default_idx = model_choices.index(current_stored) if current_stored in model_choices else model_choices.index("gemini-1.5-pro (Google)")
+            except:
+                default_idx = 0
+
+            selected_model = st.selectbox(
+                "🧠 Orchestrator Model", 
+                model_choices, 
+                index=default_idx,
+                help="The central 'brain' model that decides which tools to call."
+            )
+            if st.session_state.selected_model != selected_model:
+                st.session_state.selected_model = selected_model
+                st.session_state.agent = None
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # 2. Analysis Model
+            current_analysis = st.session_state.get("selected_analysis_model")
+            try:
+                analysis_idx = model_choices.index(current_analysis) if current_analysis in model_choices else model_choices.index("gemini-1.5-pro (Google)")
+            except:
+                analysis_idx = 0
+
+            selected_analysis = st.selectbox(
+                "🔍 Analysis Model", 
+                model_choices, 
+                index=analysis_idx,
+                help="The specialized model used for document parsing and web research."
+            )
+            if st.session_state.selected_analysis_model != selected_analysis:
+                st.session_state.selected_analysis_model = selected_analysis
+
         with st.expander("📋 Application Details", expanded=True):
-            company_name = st.text_input("Company Name")
-            app_no = st.text_input("Application No.")
+            st.text_input("Company Name", key="company_name")
+            st.text_input("Application No.", key="app_no")
             app_date = st.date_input("Application Date")
-            if st.button("🔄 Auto-Fetch (Coming Soon)"):
-                st.info("Integration pending — will connect to core banking system.")
+
 
         st.markdown("---")
 
-        with st.expander("📁 Document Ingestion", expanded=True):
+        with st.expander("📁 Manual Document Ingestion", expanded=False):
             st.info("Upload the required documents for AI processing.")
             app_form = st.file_uploader("Application Form", type=["pdf", "docx"])
             cibil = st.file_uploader("CIBIL Score Report", type=["pdf"])
-            gst = st.file_uploader("GST Returns (GSTR-2A/3B)", type=["pdf", "csv", "xlsx"])
-            bank = st.file_uploader("Bank Statements", type=["pdf", "csv", "xlsx"])
+            gst = st.file_uploader("GST Returns (GSTR-2A/3B)", type=["pdf"])
+            bank = st.file_uploader("Bank Statements", type=["pdf"])
             annual = st.file_uploader("Annual Reports", type=["pdf"])
 
         st.markdown("---")
 
-        with st.expander("🧑‍💼 Officer Insights", expanded=True):
+        with st.expander("🧑‍💼 Manual Officer Insights", expanded=False):
             officer_report = st.file_uploader("Upload Officer Report", type=["pdf", "docx", "txt"])
             manual_entry = st.text_area(
                 "Manual Notes",
@@ -571,88 +742,120 @@ def render_analysis():
 
         st.markdown("---")
 
-        # Submit button
-        if st.button("🚨 Submit to Agent", type="primary", use_container_width=True):
+        file_map = {
+            "Application_Form": app_form,
+            "CIBIL_Score_Report": cibil,
+            "GST_Returns": gst,
+            "Bank_Statements": bank,
+            "Annual_Reports": annual,
+            "Officer_Insights_Report": officer_report,
+        }
+
+        # ── INITIALIZE CHAT WITHOUT PARSING PDFs YET ──
+        if st.button("🚨 Start AI Chat", type="primary", use_container_width=True):
             st.session_state.docs_verified = True
-            st.session_state.company_name = company_name
-            st.session_state.app_no = app_no
+
+            # Source from session state (synced with text_input keys)
+            current_c_name = st.session_state.get("company_name", "").strip()
+            current_a_no = st.session_state.get("app_no", "").strip()
+
+            # Fix: If UI input is blank but we have an auto-fetch result, use it
+            if not current_c_name and st.session_state.get("company_name"):
+                 current_c_name = st.session_state.company_name
+            if not current_a_no and st.session_state.get("app_no"):
+                 current_a_no = st.session_state.app_no
+
+            if not current_a_no:
+                st.error("Application Number is required.")
+                st.stop()
 
             # Reset agent state for new analysis
             st.session_state.messages = []
             st.session_state.agent = None
-            st.session_state.thread_id = None
+            if not st.session_state.get("thread_id"):
+                st.session_state.thread_id = str(uuid.uuid4())
             st.session_state.waiting_for_human = False
             st.session_state.interrupt_data = None
             st.session_state.cam_generated = False
             st.session_state.cam_content = ""
 
-            # Save uploaded files
-            c_name = company_name.strip().replace(" ", "_") or "Company"
-            a_no = app_no.strip().replace(" ", "_") or "App"
-            folder_name = f"{c_name}_{a_no}"
-            save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads", folder_name)
+            # ── Touchless Auto-Fetch Logic ──
+            # Automatically check if a local folder exists for this App No
+            found_dir = None
+            uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+            if os.path.exists(uploads_dir):
+                for dirname in os.listdir(uploads_dir):
+                    if dirname.endswith(f"_{current_a_no}"):
+                        found_dir = os.path.join(uploads_dir, dirname)
+                        # Derive name from folder: everything before last underscore
+                        recovered_name = dirname.rsplit("_", 1)[0].replace("_", " ")
+                        # Use recovered name if current is blank or suspicious
+                        if not current_c_name or current_c_name.isdigit() or current_c_name == current_a_no:
+                             current_c_name = recovered_name
+                        break
+            
+            if found_dir and os.path.isdir(found_dir):
+                # We found a local folder—check for valid documents
+                existing_files = [f for f in os.listdir(found_dir) if os.path.isfile(os.path.join(found_dir, f)) and not f.endswith(".json") and not f.endswith(".txt")]
+                if existing_files:
+                    save_dir = found_dir
+                    uploaded_doc_names = list(existing_files)
+                    saved_count = len(uploaded_doc_names)
+                else:
+                    # Fallback to manual naming if folder is empty or invalid
+                    c_slug = current_c_name.replace(" ", "_") or "Company"
+                    a_slug = current_a_no.replace(" ", "_") or "App"
+                    save_dir = os.path.join(uploads_dir, f"{c_slug}_{a_slug}")
+                    uploaded_doc_names = []
+                    saved_count = 0
+            else:
+                # No local folder found—proceed with manual naming convention
+                c_slug = current_c_name.replace(" ", "_") or "Company"
+                a_slug = current_a_no.replace(" ", "_") or "App"
+                save_dir = os.path.join(uploads_dir, f"{c_slug}_{a_slug}")
+                uploaded_doc_names = []
+                saved_count = 0
+            
+            st.session_state.current_upload_dir = save_dir
             os.makedirs(save_dir, exist_ok=True)
-
-            file_map = {
-                "Application_Form": app_form,
-                "CIBIL_Score_Report": cibil,
-                "GST_Returns": gst,
-                "Bank_Statements": bank,
-                "Annual_Reports": annual,
-                "Officer_Insights_Report": officer_report,
-            }
-
-            saved_count = 0
+            
             extracted_text = ""
-            uploaded_doc_names = []
+
             for section_name, uploaded_file in file_map.items():
                 if uploaded_file is not None:
-                    uploaded_doc_names.append(section_name.replace("_", " "))
-                    ext = os.path.splitext(uploaded_file.name)[1]
+                    ext = os.path.splitext(uploaded_file.name)[1].lower()
                     save_path = os.path.join(save_dir, f"{section_name}{ext}")
+                    
+                    new_filename = f"{section_name}{ext}"
+                    if new_filename not in uploaded_doc_names:
+                        uploaded_doc_names.append(new_filename)
+                        saved_count += 1
+                        
                     file_bytes = uploaded_file.getbuffer()
                     with open(save_path, "wb") as f:
                         f.write(file_bytes)
-                    if ext.lower() == ".pdf":
-                        try:
-                            pdf_reader = PdfReader(io.BytesIO(file_bytes))
-                            text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
-                            extracted_text += f"\n\n--- Document: {section_name} (PDF) ---\n\n" + text
-                        except Exception as e:
-                            st.error(f"Failed to read {section_name}: {e}")
-                    elif ext.lower() == ".csv":
-                        try:
-                            df = pd.read_csv(io.BytesIO(file_bytes))
-                            text = df.to_string(index=False)
-                            extracted_text += f"\n\n--- Document: {section_name} (CSV) ---\n\n" + text
-                        except Exception as e:
-                            st.error(f"Failed to read {section_name}: {e}")
-                    elif ext.lower() in [".xlsx", ".xls"]:
-                        try:
-                            df = pd.read_excel(io.BytesIO(file_bytes))
-                            text = df.to_string(index=False)
-                            extracted_text += f"\n\n--- Document: {section_name} (Excel) ---\n\n" + text
-                        except Exception as e:
-                            st.error(f"Failed to read {section_name}: {e}")
-                    saved_count += 1
-
-            st.session_state.pdf_extracted_text = extracted_text
-            st.session_state.manual_entry = manual_entry.strip() if manual_entry else ""
 
             if manual_entry and manual_entry.strip():
-                save_path = os.path.join(save_dir, "Officer_Manual_Notes.txt")
-                with open(save_path, "w") as f:
-                    f.write(manual_entry.strip())
                 saved_count += 1
                 uploaded_doc_names.append("Officer Manual Notes")
+                extracted_text += f"\n\n--- Document: Officer Manual Notes ---\n\n" + manual_entry.strip()
+
+            st.session_state.document_extracted_text = extracted_text.strip()
+            st.session_state.manual_entry = manual_entry.strip() if manual_entry else ""
+
+            # Save initial text to bridge file
+            thread_id = st.session_state.thread_id
+            os.makedirs("temp_storage", exist_ok=True)
+            bridge_path = os.path.join("temp_storage", f"{thread_id}.txt")
+            with open(bridge_path, "w") as f:
+                f.write(st.session_state.document_extracted_text)
 
             if saved_count > 0:
-                st.success(f"✅ {saved_count} document(s) uploaded and extracted.")
+                st.success(f"✅ {saved_count} inputs saved for analysis.")
 
-            # Automatically trigger the agent to acknowledge receipt instead of fake message
             st.session_state.messages = []
             doc_list_str = ", ".join(uploaded_doc_names) if uploaded_doc_names else "No documents"
-            prompt = f"I have submitted the application for '{company_name}' (App No: {app_no}). I uploaded the following documents: {doc_list_str}. \n\nPlease confirm receipt of these documents, list them back to me, and ask if you should proceed with the analysis."
+            prompt = f"I have submitted the application for '{current_c_name}' (App No: {current_a_no}). I uploaded the following documents: {doc_list_str}. \n\nPlease confirm receipt of these documents, list them back to me, and ask if you should proceed with the analysis."
             st.session_state.auto_submit_prompt = prompt
 
             st.rerun()
@@ -721,8 +924,12 @@ def render_analysis():
                 status.update(label="✅ Ready to proceed!", state="complete")
         st.rerun()
 
+
+
     # ── Chat Input ──
-    if prompt := st.chat_input("Type here to interact with the AI Agent..."):
+    prompt = st.chat_input("Type here to interact with the AI Agent...")
+
+    if prompt:
         add_message("user", prompt)
 
         if st.session_state.waiting_for_human:
@@ -773,7 +980,7 @@ def _render_cam_extras():
 
         col_l, col_c, col_r = st.columns([1, 3, 1])
         with col_c:
-            st.bar_chart(shap_df, color="#667eea", height=400)
+            st.bar_chart(shap_df, color="#247eea", height=400)
 
         # PDF download
         pdf_bytes = generate_cam_pdf(st.session_state.cam_content)
