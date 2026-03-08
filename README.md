@@ -1,8 +1,8 @@
 <div align="center">
 
 # 🏦 CREDI-MITRA
-### **Next-Gen Agentic Credit Underwriting Engine**  
-*Bridging the Intelligence Gap with Multi-Agent Orchestration & High-Fidelity Data Extraction*
+### **AI-Powered Corporate Credit Appraisal System**  
+*Empowering Banks with Intelligent Credit Underwriting*
 
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://credibmitra-ai.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python_3.13+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
