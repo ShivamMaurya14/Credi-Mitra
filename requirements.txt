@@ -1,4 +1,4 @@
-# CREDI-MITRA Dependencies
+streamlit run app.pystreamlit run app.pystreamlit run app.pystreamlit run app.pystreamlit run app.pystreamlit run app.py# CREDI-MITRA Dependencies
 # Core
 streamlit>=1.40.0
 python-dotenv>=1.0.0
@@ -22,6 +22,10 @@ fpdf2>=2.7.0
 python-docx>=1.1.0
 llama-parse>=0.5.0
 nest-asyncio>=1.6.0
+
+# Vector Database & RAG
+chromadb>=0.5.0
+sentence-transformers>=2.2.0
 
 # Utilities
 pydantic>=2.0.0

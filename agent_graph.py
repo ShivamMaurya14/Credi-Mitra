@@ -28,6 +28,9 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt, Command
 import time
 
+# Import RAG tools
+from rag_tools import get_rag_tools
+
 load_dotenv()
 
 # ──────────────────────────────────────────────
@@ -1463,6 +1466,8 @@ ALL_TOOLS = [
     extract_numerical_features,
     run_xgboost_scorer,
     generate_cam_report,
+    # RAG Tools for document retrieval
+    *get_rag_tools(),
 ]
 
 

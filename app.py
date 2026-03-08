@@ -6,6 +6,7 @@ Features:
 - Intermediate tool visibility (every tool call shown in expandable sections)
 - Human-in-the-Loop via LangGraph interrupt / Command(resume=...)
 - Session state memory for conversation persistence across reruns
+- RAG Document Management Dashboard
 """
 
 import streamlit as st
@@ -26,6 +27,9 @@ from langgraph.types import interrupt, Command
 import nest_asyncio
 nest_asyncio.apply()
 from llama_parse import LlamaParse
+
+# Import RAG UI components
+from rag_ui import render_rag_dashboard
 
 load_dotenv()
 
@@ -619,12 +623,15 @@ def render_dashboard():
     with col_action:
         with st.container(height=400, border=True):
             st.subheader("⚡ Quick Actions")
-            st.caption("Initiate a multi-agent AI analysis powered by LLM Orchestrator")
+            st.caption("Choose an action to perform")
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🚀 Start New Application Analysis", type="primary", use_container_width=True):
                 switch_page("analysis")
             st.markdown("<br>", unsafe_allow_html=True)
-            st.success("🤖 **System Status:**\n\n✅ LLM Orchestrator Online\n\n✅ XGBoost Engine Ready")
+            if st.button("📚 RAG Document Intelligence", type="secondary", use_container_width=True):
+                switch_page("rag_dashboard")
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.success("🤖 **System Status:**\n\n✅ LLM Orchestrator Online\n\n✅ XGBoost Engine Ready\n\n✅ Chroma DB Ready")
 
     with col_settings:
         with st.container(height=400, border=True):
@@ -1007,6 +1014,8 @@ def main():
             render_dashboard()
         elif st.session_state.current_page == "analysis":
             render_analysis()
+        elif st.session_state.current_page == "rag_dashboard":
+            render_rag_dashboard()
         else:
             render_dashboard()
 
