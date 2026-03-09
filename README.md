@@ -1,8 +1,6 @@
 <div align="center">
 
-# 🏦 CREDI-MITRA
-### **AI-Powered Corporate Credit Appraisal System**
-*Empowering Banks with Intelligent, High-Accuracy Credit Underwriting*
+<img src="resources/logo.png" alt="CREDI-MITRA Logo" width="600px">
 
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://credibmitra-ai.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python_3.13+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -12,15 +10,17 @@
 
 ---
 
-**Problem Statement** Traditional credit underwriting is plagued by fragmented data, slow manual research, and "black-box" decisioning. Banks lose precious time manually parsing complex financial tables and searching for litigation records.
+**Problem Statement**
+ Traditional credit underwriting is plagued by fragmented data, slow manual research, and "black-box" decisioning. Banks lose precious time manually parsing complex financial tables and searching for litigation records.
 
-**Our Solution** **CREDI-MITRA** is an autonomous AI agent that handles the end-to-end credit appraisal process. It doesn't just "process" data—it **reasons** through it, conducts live web research, verifies facts via Human-in-the-Loop (HITL), and generates a professional **Credit Appraisal Memo (CAM)** backed by a high-accuracy ML model.
+**Our Solution**
+ **CREDI-MITRA** is an autonomous AI agent that handles the end-to-end credit appraisal process. It doesn't just "process" data—it **reasons** through it, conducts live web research, verifies facts via Human-in-the-Loop (HITL), and generates a professional **Credit Appraisal Memo (CAM)** backed by a high-accuracy ML model.
 
 </div>
 
 ---
 
-## ✨ Key Pillars of Intelligence
+## **✨ Key Pillars of Intelligence**
 
 *   **🧠 Dual-Brain Architecture**: Separates **Orchestration** (Llama 3.3/Gemini 2.5) from **Deep Analysis** (Gemini 1.5 Pro).
 *   **🧬 High-Fidelity Extraction**: **LlamaParse** + **Pinecone Cloud** convert complex PDFs into searchable Markdown, reducing hallucinations by 85%.
@@ -30,7 +30,7 @@
 
 ---
 
-## ⚡ The 5-Phase Systematic Workflow
+## **⚡ The 5-Phase Systematic Workflow**
 
 1.  **Phase 1: Sequential Document Intelligence** – Automated verification of mandatory docs + 5Cs Insights extraction.
 2.  **Phase 2: External Risk Discovery** – Granular litigation search and live news sentiment cross-verification.
@@ -40,27 +40,20 @@
 
 ---
 
-## 🏗️ System Workflow
+## **🏗️ System Workflow**
 
 ```mermaid
 graph TD
-    Start["User Uploads Docs & Selects Model"] --> P1["Phase 1: Per-document RAG Analysis"]
-    P1 <--> H1["Chat-based HITL Reviews"]
-    P1 --> P2["Phase 2: Web Search & Litigation"]
-    P2 <--> H2["Chat-based HITL Reviews"]
-    P2 --> P3["Phase 3: Numerical Feature Extraction"]
-    P3 <--> H3["Chat-based HITL Reviews"]
-    P3 --> P4["Phase 4: ML Scoring & Rules"]
-    P4 <--> H4["Chat-based HITL Reviews"]
-    P4 --> P5["Phase 5: CAM Generation & PDF"]
-    P5 --> Done["Final Confirmation in Chat"]
-
-    style Start fill:#f9f,stroke:#333,stroke-width:2px
-    style Done fill:#ccf,stroke:#333,stroke-width:2px
-    style H1 fill:#fffbe6,stroke:#d4b106
-    style H2 fill:#fffbe6,stroke:#d4b106
-    style H3 fill:#fffbe6,stroke:#d4b106
-    style H4 fill:#fffbe6,stroke:#d4b106
+    Start["&nbsp;&nbsp;&nbsp; 🚀 User Uploads Docs & Model Select &nbsp;&nbsp;&nbsp;"] --> P1["&nbsp;&nbsp;&nbsp; 📂 Phase 1: RAG Analysis &nbsp;&nbsp;&nbsp;"]
+    P1 <--> H1["&nbsp;&nbsp;&nbsp; 💬 HITL Review &nbsp;&nbsp;&nbsp;"]
+    P1 --> P2["&nbsp;&nbsp;&nbsp; 🌐 Phase 2: Web Litigation &nbsp;&nbsp;&nbsp;"]
+    P2 <--> H2["&nbsp;&nbsp;&nbsp; 💬 HITL Review &nbsp;&nbsp;&nbsp;"]
+    P2 --> P3["&nbsp;&nbsp;&nbsp; 🔢 Phase 3: Feature Extraction &nbsp;&nbsp;&nbsp;"]
+    P3 <--> H3["&nbsp;&nbsp;&nbsp; 💬 HITL Review &nbsp;&nbsp;&nbsp;"]
+    P3 --> P4["&nbsp;&nbsp;&nbsp; ⚖️ Phase 4: ML Scoring &nbsp;&nbsp;&nbsp;"]
+    P4 <--> H4["&nbsp;&nbsp;&nbsp; 💬 HITL Review &nbsp;&nbsp;&nbsp;"]
+    P4 --> P5["&nbsp;&nbsp;&nbsp; 📄 Phase 5: CAM Export &nbsp;&nbsp;&nbsp;"]
+    P5 --> Done["&nbsp;&nbsp;&nbsp; ✅ Final Confirmation &nbsp;&nbsp;&nbsp;"]
 ```
 
 ---
