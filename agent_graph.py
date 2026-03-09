@@ -536,21 +536,23 @@ def crawl_web_for_litigation(company_name: str) -> str:
     """Search the web for litigation records, NCLT filings, regulatory actions,
     and news sentiment for a given company.
     
-    ROBUST VERSION: Displays structured tabular results with proper error handling,
+    ROBUST VERSION: Returns structured analysis data with proper error handling,
     API fallbacks, and comprehensive litigation analysis.
     
     This tool searches public databases and news sources for any legal disputes,
     NCLT filings, RBI regulatory actions, and general news sentiment.
     
-    Returns structured data with metrics:
+    Returns structured JSON data with metrics:
     - Litigation Count
     - News Sentiment Score (-1 to 1)
     - NCLT Cases
     - RBI Regulatory Actions
     - Risk Score Calculation
+    
+    NOTE: This tool returns pure data only. UI rendering happens in the app layer.
     """
     if not company_name or not company_name.strip():
-        return json.dumps({"status": "error", "message": "No company name provided."})
+        return json.dumps({"status": "error", "message": "No company name provided.", "detailed_findings": []})
 
     company_name = company_name.strip()
 
@@ -577,11 +579,12 @@ def crawl_web_for_litigation(company_name: str) -> str:
     details_rbi = []
     final_headlines = []
     snippets = []
+    warnings_log = []  # Log warnings instead of displaying
 
     # ── Real Web Research via Tavily (with error handling) ──
     try:
         if not TAVILY_API_KEY or TAVILY_API_KEY.lower() in ["", "none", "false", "disabled"]:
-            st.warning("⚠️ Tavily API key not configured. Using mock data.")
+            warnings_log.append("Tavily API key not configured. Using mock data.")
             # Create mock data for demonstration
             snippets = [
                 {
@@ -596,7 +599,15 @@ def crawl_web_for_litigation(company_name: str) -> str:
                 }
             ]
         else:
-            from tavily import TavilyClient
+            try:
+                from tavily import TavilyClient
+            except ImportError:
+                return json.dumps({
+                    "status": "error",
+                    "message": "Tavily library not installed",
+                    "detailed_findings": []
+                })
+            
             client = TavilyClient(api_key=TAVILY_API_KEY)
             
             # Multiple search queries to cover different litigation types
@@ -616,7 +627,7 @@ def crawl_web_for_litigation(company_name: str) -> str:
                             "content": r.get('content', '').strip()
                         })
                 except Exception as api_err:
-                    st.warning(f"⚠️ Search query failed: {str(api_err)[:80]}")
+                    warnings_log.append(f"Search query failed: {str(api_err)[:80]}")
                     continue
             
             # Deduplicate by URL
@@ -628,15 +639,8 @@ def crawl_web_for_litigation(company_name: str) -> str:
                     seen_urls.add(s.get('url'))
             snippets = unique_snippets[:10]  # Cap at 10 results
 
-    except ImportError:
-        st.error("❌ Tavily client library not installed. Cannot perform web research.")
-        return json.dumps({
-            "status": "error",
-            "message": "Tavily library missing",
-            "detailed_findings": []
-        })
     except Exception as api_err:
-        st.warning(f"⚠️ Web API error: {str(api_err)[:100]}. Proceeding with limited analysis.")
+        warnings_log.append(f"Web API error: {str(api_err)[:100]}")
         snippets = []  # Continue with empty results
 
     if not snippets:
@@ -646,29 +650,17 @@ def crawl_web_for_litigation(company_name: str) -> str:
             "content": "No litigation or regulatory information found in public records."
         }]
 
-    # ── INTERACTIVE: Display search initialized ──
-    st.info(f"🔍 **Web Research Started** for '{company_name}'")
-    st.write(f"Analyzing **{len(snippets)}** information sources for litigation, NCLT filings, and regulatory actions...")
-    
     # ── Granular LLM Analysis (One-by-One Snippet Processing) ──
     analysis_llm = _get_tool_llm()
+    errors_log = []  # Log errors during analysis
     
-    with st.expander("📰 **Detailed Litigation Analysis - Click to expand**", expanded=True):
-        progress_bar = st.progress(0)
-        status_placeholder = st.empty()
-        
-        for i, snippet in enumerate(snippets):
-            try:
-                # Update progress
-                progress = (i + 1) / max(1, len(snippets))
-                progress_bar.progress(min(progress, 0.99))
-                status_placeholder.write(f"Analyzing result {i+1}/{len(snippets)}: **{snippet.get('title', 'Unknown')[:60]}...**")
-                
-                # Validate snippet content
-                title = (snippet.get('title') or 'N/A')[:200]
-                content = (snippet.get('content') or 'No content')[:1000]
-                
-                snippet_prompt = f"""# LEGAL & REGULATORY ANALYSIS [{i+1}/{len(snippets)}]
+    for i, snippet in enumerate(snippets):
+        try:
+            # Validate snippet content
+            title = (snippet.get('title') or 'N/A')[:200]
+            content = (snippet.get('content') or 'No content')[:1000]
+            
+            snippet_prompt = f"""# LEGAL & REGULATORY ANALYSIS [{i+1}/{len(snippets)}]
 Company: {company_name}
 Title: {title}
 Content: {content}
@@ -686,122 +678,84 @@ RESPOND WITH ONLY VALID JSON (no markdown):
   "is_rbi_penalty": false,
   "litigation_type": "None"
 }}"""
-                try:
-                    if i > 0: time.sleep(0.3)
+            try:
+                if i > 0: time.sleep(0.3)
+                
+                resp = analysis_llm.invoke([HumanMessage(content=snippet_prompt)])
+                clean_resp = resp.content.strip()
+                
+                # Robust JSON extraction
+                if "```json" in clean_resp:
+                    clean_resp = clean_resp.split("```json")[1].split("```")[0].strip()
+                elif "```" in clean_resp:
+                    clean_resp = clean_resp.split("```")[1].split("```")[0].strip()
+                
+                # Find JSON object
+                start_idx = clean_resp.find("{")
+                end_idx = clean_resp.rfind("}") + 1
+                
+                if start_idx != -1 and end_idx > start_idx:
+                    clean_resp = clean_resp[start_idx:end_idx]
+                
+                data = json.loads(clean_resp)
+                
+                # Validate and set defaults
+                data = {
+                    "is_positive": bool(data.get("is_positive", False)),
+                    "is_negative": bool(data.get("is_negative", False)),
+                    "litigation_found": bool(data.get("litigation_found", False)),
+                    "sentiment_score": float(data.get("sentiment_score", 0.0)),
+                    "risk_level": str(data.get("risk_level", "LOW")).upper(),
+                    "risk_summary": str(data.get("risk_summary", "N/A"))[:150],
+                    "is_nclt": bool(data.get("is_nclt", False)),
+                    "is_rbi_penalty": bool(data.get("is_rbi_penalty", False)),
+                    "litigation_type": str(data.get("litigation_type", "None"))
+                }
+                
+                # Count metrics
+                if data["is_positive"]: positive_count += 1
+                if data["is_negative"]: negative_count += 1
+                if data["litigation_found"]: agg_litigation += 1
+                
+                agg_sentiment += data["sentiment_score"]
+                
+                if data.get("risk_summary") and data["risk_summary"] != "N/A":
+                    if data["is_nclt"]: details_nclt.append(data["risk_summary"])
+                    if data["is_rbi_penalty"]: details_rbi.append(data["risk_summary"])
+                
+                snippet_info = {
+                    "headline": title,
+                    "url": snippet.get('url', 'N/A'),
+                    "sentiment": data.get("sentiment_score", 0.0),
+                    "risk_level": data.get("risk_level", "MEDIUM"),
+                    "litigation_type": data.get("litigation_type", "None"),
+                    "risk_found": data.get("litigation_found", False),
+                    "summary": data.get("risk_summary", ""),
+                    "is_nclt": data.get("is_nclt", False),
+                    "is_rbi": data.get("is_rbi_penalty", False)
+                }
+                processed_data.append(snippet_info)
+                final_headlines.append(title)
                     
-                    resp = analysis_llm.invoke([HumanMessage(content=snippet_prompt)])
-                    clean_resp = resp.content.strip()
-                    
-                    # Robust JSON extraction
-                    if "```json" in clean_resp:
-                        clean_resp = clean_resp.split("```json")[1].split("```")[0].strip()
-                    elif "```" in clean_resp:
-                        clean_resp = clean_resp.split("```")[1].split("```")[0].strip()
-                    
-                    # Find JSON object
-                    start_idx = clean_resp.find("{")
-                    end_idx = clean_resp.rfind("}") + 1
-                    
-                    if start_idx != -1 and end_idx > start_idx:
-                        clean_resp = clean_resp[start_idx:end_idx]
-                    
-                    data = json.loads(clean_resp)
-                    
-                    # Validate and set defaults
-                    data = {
-                        "is_positive": bool(data.get("is_positive", False)),
-                        "is_negative": bool(data.get("is_negative", False)),
-                        "litigation_found": bool(data.get("litigation_found", False)),
-                        "sentiment_score": float(data.get("sentiment_score", 0.0)),
-                        "risk_level": str(data.get("risk_level", "LOW")).upper(),
-                        "risk_summary": str(data.get("risk_summary", "N/A"))[:150],
-                        "is_nclt": bool(data.get("is_nclt", False)),
-                        "is_rbi_penalty": bool(data.get("is_rbi_penalty", False)),
-                        "litigation_type": str(data.get("litigation_type", "None"))
-                    }
-                    
-                    # Count metrics
-                    if data["is_positive"]: positive_count += 1
-                    if data["is_negative"]: negative_count += 1
-                    if data["litigation_found"]: agg_litigation += 1
-                    
-                    agg_sentiment += data["sentiment_score"]
-                    
-                    if data.get("risk_summary") and data["risk_summary"] != "N/A":
-                        if data["is_nclt"]: details_nclt.append(data["risk_summary"])
-                        if data["is_rbi_penalty"]: details_rbi.append(data["risk_summary"])
-                    
-                    # Display finding with color coding
-                    risk_level = data.get("risk_level", "MEDIUM")
-                    emoji = "🔴" if risk_level == "HIGH" else "🟡" if risk_level in ["MEDIUM", "MODERATE"] else "🟢" if risk_level in ["POSITIVE", "LOW"] else "⚪"
-                    
-                    st.write(f"{emoji} **{title}**")
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.caption(f"Risk: **{risk_level}**")
-                    col2.caption(f"Sentiment: {data.get('sentiment_score', 0):.2f}")
-                    col3.caption(f"Type: {data.get('litigation_type', 'None')}")
-                    col4.caption(f"Source: {snippet.get('url', 'N/A')[:35]}...")
-                    st.caption(f"📝 {data.get('risk_summary', 'N/A')}")
-                    st.divider()
-                    
-                    snippet_info = {
-                        "headline": title,
-                        "url": snippet.get('url', 'N/A'),
-                        "sentiment": data.get("sentiment_score", 0.0),
-                        "risk_level": risk_level,
-                        "litigation_type": data.get("litigation_type", "None"),
-                        "risk_found": data.get("litigation_found", False),
-                        "summary": data.get("risk_summary", ""),
-                        "is_nclt": data.get("is_nclt", False),
-                        "is_rbi": data.get("is_rbi_penalty", False)
-                    }
-                    processed_data.append(snippet_info)
-                    final_headlines.append(title)
-                    
-                except json.JSONDecodeError as je:
-                    st.warning(f"⚠️ Failed to parse response JSON: {str(je)[:60]}")
-                    # Create minimal record
-                    processed_data.append({
-                        "headline": title,
-                        "url": snippet.get('url', 'N/A'),
-                        "sentiment": 0.0,
-                        "risk_level": "UNKNOWN",
-                        "litigation_type": "Error",
-                        "risk_found": False,
-                        "summary": "Parse error",
-                        "is_nclt": False,
-                        "is_rbi": False
-                    })
-                    continue
-                    
-            except Exception as e:
-                st.warning(f"⚠️ Analysis error for result {i+1}: {str(e)[:100]}")
+            except json.JSONDecodeError as je:
+                errors_log.append(f"Failed to parse response JSON: {str(je)[:60]}")
+                # Create minimal record
+                processed_data.append({
+                    "headline": title,
+                    "url": snippet.get('url', 'N/A'),
+                    "sentiment": 0.0,
+                    "risk_level": "UNKNOWN",
+                    "litigation_type": "Error",
+                    "risk_found": False,
+                    "summary": "Parse error",
+                    "is_nclt": False,
+                    "is_rbi": False
+                })
                 continue
-        
-        progress_bar.progress(1.0)
-        status_placeholder.empty()
-    
-    # ── Create Tabular Output ──
-    st.subheader("📊 Litigation Analysis Results - Tabular Summary")
-    
-    if processed_data:
-        df_display = pd.DataFrame(processed_data)
-        # Ensure proper column order
-        col_order = ["headline", "risk_level", "sentiment", "litigation_type", "is_nclt", "is_rbi", "summary"]
-        df_display = df_display[[c for c in col_order if c in df_display.columns]]
-        
-        # Format display DataFrame
-        df_display_styled = df_display.copy()
-        df_display_styled['risk_level'] = df_display_styled['risk_level'].apply(
-            lambda x: f"🔴 {x}" if x == "HIGH" else f"🟡 {x}" if x in ["MEDIUM", "MODERATE"] else f"🟢 {x}" if x in ["LOW", "POSITIVE"] else f"⚪ {x}"
-        )
-        df_display_styled['sentiment'] = df_display_styled['sentiment'].apply(lambda x: f"{x:.2f}")
-        df_display_styled['is_nclt'] = df_display_styled['is_nclt'].apply(lambda x: "✓ NCLT" if x else "")
-        df_display_styled['is_rbi'] = df_display_styled['is_rbi'].apply(lambda x: "✓ RBI" if x else "")
-        
-        st.dataframe(df_display_styled, use_container_width=True, height=400)
-    else:
-        st.info("ℹ️ No litigation data to display.")
+                    
+        except Exception as e:
+            errors_log.append(f"Analysis error for result {i+1}: {str(e)[:100]}")
+            continue
     
     # ── Synthesis with Risk Score ──
     litigation_count = agg_litigation
@@ -811,24 +765,7 @@ RESPOND WITH ONLY VALID JSON (no markdown):
     nclt_cases = list(set(details_nclt))[:5]
     rbi_actions = list(set(details_rbi))[:5]
     
-    # ── Display Summary Metrics Card ──
-    st.success("✅ **Web Research & Litigation Analysis Complete**")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📋 Litigations Found", litigation_count)
-    col2.metric("😊 Avg Sentiment", sentiment_score, delta="Range: -1 to 1")
-    col3.metric("📊 Positive News", positive_count)
-    col4.metric("📊 Negative News", negative_count)
-    
-    col_risk, col_total = st.columns(2)
-    col_risk.metric("⚠️ Net Risk Score", risk_score, delta="Negative minus Positive")
-    col_total.metric("📈 Results Analyzed", len(snippets))
-    
-    if nclt_cases:
-        st.warning(f"🚨 **NCLT Cases Found ({len(nclt_cases)})**: {'; '.join(nclt_cases[:3])}")
-    if rbi_actions:
-        st.error(f"⛔ **RBI Regulatory Actions ({len(rbi_actions)})**: {'; '.join(rbi_actions[:3])}")
-    
-    # ── Prepare final result ──
+    # ── Prepare final result (pure data, no UI calls) ──
     result = {
         "status": "success" if processed_data else "partial_success",
         "company_searched": company_name,
@@ -842,7 +779,9 @@ RESPOND WITH ONLY VALID JSON (no markdown):
         "rbi_regulatory_actions": rbi_actions,
         "headlines": final_headlines[:5],
         "detailed_findings": processed_data,
-        "analysis_timestamp": pd.Timestamp.now().isoformat()
+        "analysis_timestamp": pd.Timestamp.now().isoformat(),
+        "warnings": warnings_log,
+        "errors_during_analysis": errors_log
     }
 
     # ── Save detailed findings to disk ──
@@ -854,39 +793,41 @@ RESPOND WITH ONLY VALID JSON (no markdown):
             with open(os.path.join(analysis_dir, "web_research_analysis.json"), "w") as f:
                 json.dump(result, f, indent=2)
     except Exception as e:
-        st.warning(f"⚠️ Could not save results: {str(e)[:50]}")
+        pass  # Silently fail if can't save
 
     # ── Update global stores ──
-    _update_ml_features({
-        "Litigation_Count": litigation_count,
-        "News_Sentiment_Score": sentiment_score,
-    })
-    _update_analysis_summary("web_research", {
-        "litigation_count": litigation_count,
-        "sentiment": sentiment_score,
-        "positive_count": positive_count,
-        "negative_count": negative_count,
-        "risk_score": risk_score,
-        "total_analyzed": len(snippets),
-        "nclt": nclt_cases[:3],
-        "rbi": rbi_actions[:3]
-    })
+    try:
+        _update_ml_features({
+            "Litigation_Count": litigation_count,
+            "News_Sentiment_Score": sentiment_score,
+        })
+        _update_analysis_summary("web_research", {
+            "litigation_count": litigation_count,
+            "sentiment": sentiment_score,
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "risk_score": risk_score,
+            "total_analyzed": len(snippets),
+            "nclt": nclt_cases[:3],
+            "rbi": rbi_actions[:3]
+        })
+    except Exception:
+        pass  # Silently fail if can't update stores
 
     # ── HITL Review ──
-    st.info("👨‍💼 **Officer Review**")
-    preview = [
-        f"✅ Litigation Count: {litigation_count}",
-        f"✅ Sentiment: {sentiment_score}",
-        f"✅ NCLT Cases: {len(nclt_cases)}",
-        f"✅ RBI Actions: {len(rbi_actions)}",
-        f"✅ Positive News: {positive_count}",
-        f"✅ Negative News: {negative_count}",
-        f"✅ Net Risk Score: {risk_score}",
-        f"✅ Total Analyzed: {len(snippets)}"
-    ]
     try:
+        preview = [
+            f"✅ Litigation Count: {litigation_count}",
+            f"✅ Sentiment: {sentiment_score}",
+            f"✅ NCLT Cases: {len(nclt_cases)}",
+            f"✅ RBI Actions: {len(rbi_actions)}",
+            f"✅ Positive News: {positive_count}",
+            f"✅ Negative News: {negative_count}",
+            f"✅ Net Risk Score: {risk_score}",
+            f"✅ Total Analyzed: {len(snippets)}"
+        ]
         user_reply = _step_review(3, "Web Research - Litigation & Regulatory Analysis", preview)
-        if user_reply.lower() not in CONTINUE_COMMANDS:
+        if user_reply and user_reply.lower() not in CONTINUE_COMMANDS:
             _update_analysis_summary("web_research", {"human_note": user_reply})
     except Exception:
         pass  # If interrupt fails, skip review

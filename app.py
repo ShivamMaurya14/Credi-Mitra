@@ -268,6 +268,16 @@ def render_tool_output(tool_name, tool_data):
     icon = icon_map.get(tool_name, "🔧")
 
     with st.expander(f"{icon} Output from `{tool_name}`", expanded=True):
+        # Special handling for litigation analysis results
+        if tool_name == "crawl_web_for_litigation" and isinstance(tool_data, str):
+            try:
+                parsed = json.loads(tool_data)
+                _render_litigation_analysis(parsed)
+                return
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        # Generic rendering for other tools
         if isinstance(tool_data, str):
             try:
                 parsed = json.loads(tool_data)
@@ -282,6 +292,85 @@ def render_tool_output(tool_name, tool_data):
             st.json(tool_data)
         else:
             st.write(tool_data)
+
+
+def _render_litigation_analysis(result_dict):
+    """Render litigation analysis results in a professional tabular format."""
+    if not isinstance(result_dict, dict):
+        st.json(result_dict)
+        return
+    
+    # Extract data
+    company = result_dict.get("company_searched", "Unknown")
+    litigation_count = result_dict.get("litigation_count", 0)
+    sentiment_score = result_dict.get("news_sentiment_score", 0.0)
+    positive_news = result_dict.get("positive_news_count", 0)
+    negative_news = result_dict.get("negative_news_count", 0)
+    total_analyzed = result_dict.get("total_results_analyzed", 0)
+    risk_score = result_dict.get("risk_score", 0.0)
+    nclt_cases = result_dict.get("nclt_cases", [])
+    rbi_actions = result_dict.get("rbi_regulatory_actions", [])
+    detailed_findings = result_dict.get("detailed_findings", [])
+    warnings = result_dict.get("warnings", [])
+    errors = result_dict.get("errors_during_analysis", [])
+    
+    # Display header
+    st.success("✅ **Web Research & Litigation Analysis Complete**")
+    
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("📋 Litigations Found", litigation_count)
+    col2.metric("😊 Avg Sentiment", sentiment_score, delta="Range: -1 to 1")
+    col3.metric("📊 Positive News", positive_news)
+    col4.metric("📊 Negative News", negative_news)
+    
+    col_risk, col_total = st.columns(2)
+    col_risk.metric("⚠️ Net Risk Score", risk_score, delta="Negative minus Positive")
+    col_total.metric("📈 Results Analyzed", total_analyzed)
+    
+    # Critical findings alerts
+    if nclt_cases:
+        st.warning(f"🚨 **NCLT Cases Found ({len(nclt_cases)})**: {'; '.join(nclt_cases[:3])}")
+    if rbi_actions:
+        st.error(f"⛔ **RBI Regulatory Actions ({len(rbi_actions)})**: {'; '.join(rbi_actions[:3])}")
+    
+    # Display warnings and errors if any
+    if warnings:
+        for warning in warnings:
+            st.warning(f"⚠️ {warning}")
+    if errors:
+        st.info("**Analysis Notes:**")
+        for error in errors[:3]:
+            st.caption(f"• {error}")
+    
+    # Display detailed findings in tabular format
+    if detailed_findings:
+        st.subheader("📊 Litigation Analysis Results - Detailed Findings")
+        df = pd.DataFrame(detailed_findings)
+        
+        # Format DataFrame for display
+        if "sentiment" in df.columns:
+            df["sentiment"] = df["sentiment"].apply(lambda x: f"{x:.2f}")
+        if "risk_level" in df.columns:
+            df["risk_level"] = df["risk_level"].apply(
+                lambda x: f"🔴 {x}" if x == "HIGH" else f"🟡 {x}" if x in ["MEDIUM", "MODERATE"] else f"🟢 {x}" if x in ["LOW", "POSITIVE"] else f"⚪ {x}"
+            )
+        if "is_nclt" in df.columns:
+            df["is_nclt"] = df["is_nclt"].apply(lambda x: "✓ NCLT" if x else "")
+        if "is_rbi" in df.columns:
+            df["is_rbi"] = df["is_rbi"].apply(lambda x: "✓ RBI" if x else "")
+        
+        # Select columns to display
+        display_cols = [c for c in ["headline", "risk_level", "sentiment", "litigation_type", "is_nclt", "is_rbi", "summary"] if c in df.columns]
+        df_display = df[display_cols]
+        
+        st.dataframe(df_display, use_container_width=True, height=400)
+    else:
+        st.info("ℹ️ No litigation findings to display.")
+    
+    # Summary JSON for reference
+    with st.expander("📋 Raw JSON Data (for reference)", expanded=False):
+        st.json(result_dict)
 
 
 def generate_cam_pdf(cam_text):
