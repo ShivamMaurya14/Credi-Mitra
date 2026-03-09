@@ -29,7 +29,7 @@ nest_asyncio.apply()
 from llama_parse import LlamaParse
 
 # Import RAG UI components
-from rag_ui import render_rag_dashboard
+from rag import render_rag_dashboard
 
 load_dotenv()
 
