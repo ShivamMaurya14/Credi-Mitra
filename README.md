@@ -11,10 +11,14 @@
 ---
 
 **Problem Statement**
+
  Traditional credit underwriting is plagued by fragmented data, slow manual research, and "black-box" decisioning. Banks lose precious time manually parsing complex financial tables and searching for litigation records.
 
+
+
 **Our Solution**
- **CREDI-MITRA** is an autonomous AI agent that handles the end-to-end credit appraisal process. It doesn't just "process" data—it **reasons** through it, conducts live web research, verifies facts via Human-in-the-Loop (HITL), and generates a professional **Credit Appraisal Memo (CAM)** backed by a high-accuracy ML model.
+
+ An autonomous AI agent that handles the end-to-end credit appraisal process. It doesn't just "process" data—it **reasons** through it, conducts live web research, verifies facts via Human-in-the-Loop (HITL), and generates a professional **Credit Appraisal Memo (CAM)** backed by a high-accuracy ML model.
 
 </div>
 
@@ -22,7 +26,7 @@
 
 ## **✨ Key Pillars of Intelligence**
 
-*   **🧠 Dual-Brain Architecture**: Separates **Orchestration** (Llama 3.3/Gemini 2.5) from **Deep Analysis** (Gemini 1.5 Pro).
+*   **🧠 Dual-Brain Architecture**: Separates **Orchestration** (Llama 3.3/Gemini 3 pro) from **Deep Analysis** (Gemini 2.5 and 3 Pro).
 *   **🧬 High-Fidelity Extraction**: **LlamaParse** + **Pinecone Cloud** convert complex PDFs into searchable Markdown, reducing hallucinations by 85%.
 *   **🌐 Granular Web Research**: Autonomous one-by-one scrutiny of search results via **Tavily** to map NCLT filings and RBI penalties.
 *   **🤖 Predictive Decisioning**: Pre-trained **XGBoost Classifier** (97% accuracy) predicts Approval, Limits, and Interest Rates.
