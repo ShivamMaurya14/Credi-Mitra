@@ -6,32 +6,21 @@ Features:
 - Intermediate tool visibility (every tool call shown in expandable sections)
 - Human-in-the-Loop via LangGraph interrupt / Command(resume=...)
 - Session state memory for conversation persistence across reruns
-- RAG Document Management Dashboard
 """
 
+# Heavy imports (pandas, numpy, fpdf, pypdf, pdfplumber, docx, llama_parse) 
+# moved to internal functions to save memory on 8GB machines.
 import streamlit as st
 import time
 import json
-import uuid
 import os
 import io
 import re
-import pandas as pd
-import numpy as np
-from fpdf import FPDF
-from dotenv import load_dotenv
-from pypdf import PdfReader
-import pdfplumber
-import docx
+import uuid
 from langgraph.types import interrupt, Command
 import nest_asyncio
 nest_asyncio.apply()
-from llama_parse import LlamaParse
-
-# Import RAG UI components
-from rag import render_rag_dashboard
-
-load_dotenv()
+from dotenv import load_dotenv
 
 # Import the agent builder
 from agent_graph import build_agent
@@ -220,10 +209,14 @@ def init_session_state():
         "thread_id": None,
         "waiting_for_human": False,  # True when graph is interrupted
         "interrupt_data": None,      # The interrupt payload
+        "interrupt_id": None,        # The unique ID for the interrupt (required for multi-interrupt support)
         "agent_running": False,
         "base_premium": 8.5,         # Base interest rate premium (%)
+        "revenue_tolerance": 25,     # Revenue variance tolerance (%)
+        "litigation_threshold": 3,   # Max litigation cases allowed
         "selected_model": "gemini-1.5-pro (Google)",
         "selected_analysis_model": "gemini-1.5-pro (Google)",
+        "gemini_models": [],         # Dynamically fetched Gemini models
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -238,6 +231,35 @@ init_session_state()
 def switch_page(page_name):
     st.session_state.current_page = page_name
     st.rerun()
+
+
+def reset_application_state():
+    """Clear Pinecone DB, local temp files, and all session state analysis keys."""
+    # 1. Clear Pinecone Cloud Data & Temp Files via RAG Manager
+    try:
+        from rag import get_document_manager
+        mgr = get_document_manager()
+        mgr.reset_session()
+    except Exception as e:
+        st.warning(f"Note: Error during data cleanup: {e}")
+
+    # 2. Reset Session State Keys
+    keys_to_reset = [
+        "messages", "docs_verified", "company_name", "app_no", 
+        "pdf_extracted_text", "manual_entry", "cam_generated", 
+        "cam_content", "agent", "thread_id", "waiting_for_human", 
+        "interrupt_data", "interrupt_id", "agent_running", "document_extracted_text",
+        "current_upload_dir"
+    ]
+    for key in keys_to_reset:
+        if key in st.session_state:
+            del st.session_state[key]
+    
+    # 3. Re-initialize defaults
+    init_session_state()
+
+
+# removed fetch_available_gemini_models logic
 
 
 def add_message(role, content, **kwargs):
@@ -345,6 +367,7 @@ def _render_litigation_analysis(result_dict):
     
     # Display detailed findings in tabular format
     if detailed_findings:
+        import pandas as pd
         st.subheader("📊 Litigation Analysis Results - Detailed Findings")
         df = pd.DataFrame(detailed_findings)
         
@@ -375,6 +398,7 @@ def _render_litigation_analysis(result_dict):
 
 def generate_cam_pdf(cam_text):
     """Convert CAM markdown content into a professionally formatted PDF."""
+    from fpdf import FPDF
     cam_text = re.sub(r'[^\x00-\xff]', '', cam_text)
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
@@ -447,9 +471,7 @@ def run_agent(user_input=None, resume_value=None):
     selected_name = st.session_state.get("selected_model", "llama-3.3-70b-versatile (Groq)")
     if st.session_state.agent is None:
         try:
-            import importlib
             import agent_graph as _ag_module
-            importlib.reload(_ag_module)
             # Inject the upload directory into the module for thread-safe access by tools
             _ag_module.RELIABLE_UPLOAD_DIR = st.session_state.get("current_upload_dir")
             agent, checkpointer = _ag_module.build_agent(selected_name)
@@ -496,6 +518,8 @@ def run_agent(user_input=None, resume_value=None):
     # Prepare input
     if resume_value is not None:
         # Resuming from an interrupt
+        # Version 1.0.10 of LangGraph doesn't support 'id' keyword in Command constructor.
+        # We will pass resume value directly.
         agent_input = Command(resume=resume_value)
     else:
         # Build the context message for the agent
@@ -534,7 +558,7 @@ def run_agent(user_input=None, resume_value=None):
         else:
             tid = st.session_state.get("thread_id")
             if tid:
-                b_path = os.path.join("temp_storage", f"{tid}.txt")
+                b_path = os.path.join("temp", f"{tid}.txt")
                 if os.path.exists(b_path) and os.path.getsize(b_path) > 0:
                     doc_text_status = "Yes"
 
@@ -545,6 +569,8 @@ def run_agent(user_input=None, resume_value=None):
 - **Officer Insights**: {officer_status}
 - **Document Text Available**: {doc_text_status}
 - **Base Interest Rate Premium**: {base_premium}%
+- **Revenue Variance Tolerance**: {st.session_state.revenue_tolerance}%
+- **Litigation Threshold**: {st.session_state.litigation_threshold} cases
 """
         
         # Do not append the entire extracted text to the prompt to save LLM tokens.
@@ -563,9 +589,11 @@ def run_agent(user_input=None, resume_value=None):
                     if interrupts and len(interrupts) > 0:
                         interrupt_info = interrupts[0]
                         interrupt_value = interrupt_info.value if hasattr(interrupt_info, 'value') else interrupt_info
+                        interrupt_id = interrupt_info.id if hasattr(interrupt_info, 'id') else None
 
                         st.session_state.waiting_for_human = True
                         st.session_state.interrupt_data = interrupt_value
+                        st.session_state.interrupt_id = interrupt_id
 
                         # ── Distinguish Step Review vs HITL Data Request ──
                         if isinstance(interrupt_value, dict) and interrupt_value.get("type") == "step_review":
@@ -643,7 +671,23 @@ def run_agent(user_input=None, resume_value=None):
 
     except Exception as e:
         st.session_state.agent_running = False
-        add_message("assistant", f"❌ **Agent Error:** {str(e)}", type="error")
+        err_text = str(e)
+        # LangGraph INVALID_CHAT_HISTORY safeguard:
+        # If a previous run left half-finished tool calls in the checkpoint,
+        # we reset the thread and ask the user to resend, instead of silently dying.
+        if "INVALID_CHAT_HISTORY" in err_text or "Found AIMessages with tool_calls" in err_text:
+            # Reset agent + thread so future messages start from a clean state
+            st.session_state.agent = None
+            st.session_state.thread_id = str(uuid.uuid4())
+            add_message(
+                "assistant",
+                "⚠️ The previous analysis session left an incomplete tool call in memory. "
+                "I've reset the internal conversation state. Please resend your last message "
+                "or re-trigger the current phase (e.g., Phase 1/2/3/4/5 button).",
+                type="error",
+            )
+        else:
+            add_message("assistant", f"❌ **Agent Error:** {err_text}", type="error")
 
 
 # ──────────────────────────────────────────────
@@ -715,12 +759,10 @@ def render_dashboard():
             st.caption("Choose an action to perform")
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("🚀 Start New Application Analysis", type="primary", use_container_width=True):
+                reset_application_state()
                 switch_page("analysis")
             st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("📚 RAG Document Intelligence", type="secondary", use_container_width=True):
-                switch_page("rag_dashboard")
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.success("🤖 **System Status:**\n\n✅ LLM Orchestrator Online\n\n✅ XGBoost Engine Ready\n\n✅ Chroma DB Ready")
+            st.success("🤖 **System Status:**\n\n✅ LLM Orchestrator Online\n\n✅ XGBoost Engine Ready\n\n✅ Pinecone Cloud DB Ready")
 
     with col_settings:
         with st.container(height=400, border=True):
@@ -732,11 +774,31 @@ def render_dashboard():
                 "📈 Base Interest Rate Premium (%)",
                 min_value=5.0,
                 max_value=15.0,
-                value=st.session_state.base_premium,
+                value=float(st.session_state.base_premium),
                 step=0.25,
                 help="The base interest rate before adding risk and age premiums."
             )
             st.session_state.base_premium = base_premium
+
+            revenue_tolerance = st.slider(
+                "🛡️ Revenue Variance Tolerance (%)",
+                min_value=5,
+                max_value=100,
+                value=int(st.session_state.revenue_tolerance),
+                step=5,
+                help="Maximum allowed variance between GST Revenue and Bank Inflow before triggering a 'Circular Trading' rejection."
+            )
+            st.session_state.revenue_tolerance = revenue_tolerance
+
+            litigation_threshold = st.slider(
+                "⚖️ Litigation Threshold (Max Cases)",
+                min_value=0,
+                max_value=20,
+                value=int(st.session_state.litigation_threshold),
+                step=1,
+                help="Maximum number of active litigation cases allowed before triggering a hard rejection for legal risk."
+            )
+            st.session_state.litigation_threshold = litigation_threshold
 
             # Show the formula breakdown
             st.markdown("---")
@@ -756,58 +818,51 @@ def render_analysis():
     # ── Sidebar: Document Ingestion ──
     with st.sidebar:
         with st.expander("🚀 Agent Configuration", expanded=True):
+            # Directly provided list of high-quality, stable models
             model_choices = [
+                # --- Google Gemini (Next Gen) ---
+                "Gemini 3 (Google)",
+                "Gemini 2.5 Pro (Google)",
+                "Gemini 2.5 Flash (Google)",
+                "Gemini 2.5 Flash-Lite (Google)",
+                
+                # --- Groq (High Speed) ---
                 "llama-3.3-70b-versatile (Groq)",
                 "llama-3.1-8b-instant (Groq)",
-                "allam-2-7b (Groq)",
-                "groq/compound (Groq)",
-                "groq/compound-mini (Groq)",
-                "meta-llama/llama-4-maverick-17b-128e-instruct (Groq)",
-                "meta-llama/llama-4-scout-17b-16e-instruct (Groq)",
-                "meta-llama/llama-guard-4-12b (Groq)",
-                "moonshotai/kimi-k2-instruct (Groq)",
-                "moonshotai/kimi-k2-instruct-0905 (Groq)",
-                "openai/gpt-oss-120b (Groq)",
-                "openai/gpt-oss-20b (Groq)",
-                "qwen/qwen3-32b (Groq)",
-                "gemini-2.5-flash (Google)",
-                "gemini-1.5-pro (Google)"
+                "mixtral-8x7b-32768 (Groq)",
+                "gemma2-9b-it (Groq)",
+                "qwen-2.5-32b (Groq)",
+                "openai/gpt-oss-120b (Groq)"
+                
+                # --- OpenAI / OSS ---
+                "gpt-4o (OpenAI)",
+                "gpt-4o-mini (OpenAI)",
+                "o1 (OpenAI)",
+                "o1-mini (OpenAI)",
+                "o3-mini (OpenAI)"
             ]
             
-            # 1. Orchestrator Model
+            # Single Model Selection
             current_stored = st.session_state.get("selected_model")
             try:
-                default_idx = model_choices.index(current_stored) if current_stored in model_choices else model_choices.index("gemini-1.5-pro (Google)")
+                default_idx = model_choices.index(current_stored) if current_stored in model_choices else 0
             except:
                 default_idx = 0
 
             selected_model = st.selectbox(
-                "🧠 Orchestrator Model", 
+                "🤖 Select AI Model", 
                 model_choices, 
                 index=default_idx,
-                help="The central 'brain' model that decides which tools to call."
+                help="The central model used for both reasoning and data analysis."
             )
+            
             if st.session_state.selected_model != selected_model:
                 st.session_state.selected_model = selected_model
-                st.session_state.agent = None
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # 2. Analysis Model
-            current_analysis = st.session_state.get("selected_analysis_model")
-            try:
-                analysis_idx = model_choices.index(current_analysis) if current_analysis in model_choices else model_choices.index("gemini-1.5-pro (Google)")
-            except:
-                analysis_idx = 0
-
-            selected_analysis = st.selectbox(
-                "🔍 Analysis Model", 
-                model_choices, 
-                index=analysis_idx,
-                help="The specialized model used for document parsing and web research."
-            )
-            if st.session_state.selected_analysis_model != selected_analysis:
-                st.session_state.selected_analysis_model = selected_analysis
+                st.session_state.selected_analysis_model = selected_model
+                # Force a full state reset on model change
+                reset_application_state()
+                st.info("🔄 Model changed. Session reset for compatibility.")
+                st.rerun()
 
         with st.expander("📋 Application Details", expanded=True):
             st.text_input("Company Name", key="company_name")
@@ -837,7 +892,6 @@ def render_analysis():
             st.caption("💡 Provide either an uploaded report OR manual notes.")
 
         st.markdown("---")
-
         file_map = {
             "Application_Form": app_form,
             "CIBIL_Score_Report": cibil,
@@ -846,9 +900,8 @@ def render_analysis():
             "Annual_Reports": annual,
             "Officer_Insights_Report": officer_report,
         }
-
         # ── INITIALIZE CHAT WITHOUT PARSING PDFs YET ──
-        if st.button("🚨 Start AI Chat", type="primary", use_container_width=True):
+        if st.button("🚨 Start AI Chat (Phase 1)", type="primary", use_container_width=True):
             st.session_state.docs_verified = True
 
             # Source from session state (synced with text_input keys)
@@ -868,6 +921,19 @@ def render_analysis():
             # Reset agent state for new analysis
             st.session_state.messages = []
             st.session_state.agent = None
+            
+            # ── CLEAR PREVIOUS VECTORS (RAG RESET) ──
+            # This ensures old vectors from previous sessions/apps are cleared
+            try:
+                from rag import get_document_manager
+                # Pass selected model to ensure correct embedding provider
+                mgr = get_document_manager(model_choice=st.session_state.get("selected_model"))
+                mgr.reset_session()
+                # Also reset local extraction status
+                st.session_state.document_extracted_text = ""
+            except Exception as e:
+                st.warning(f"Note: Vector DB cleanup skipped: {e}")
+
             if not st.session_state.get("thread_id"):
                 st.session_state.thread_id = str(uuid.uuid4())
             st.session_state.waiting_for_human = False
@@ -878,7 +944,7 @@ def render_analysis():
             # ── Touchless Auto-Fetch Logic ──
             # Automatically check if a local folder exists for this App No
             found_dir = None
-            uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+            uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "applications_received")
             if os.path.exists(uploads_dir):
                 for dirname in os.listdir(uploads_dir):
                     if dirname.endswith(f"_{current_a_no}"):
@@ -941,8 +1007,8 @@ def render_analysis():
 
             # Save initial text to bridge file
             thread_id = st.session_state.thread_id
-            os.makedirs("temp_storage", exist_ok=True)
-            bridge_path = os.path.join("temp_storage", f"{thread_id}.txt")
+            os.makedirs("temp", exist_ok=True)
+            bridge_path = os.path.join("temp", f"{thread_id}.txt")
             with open(bridge_path, "w") as f:
                 f.write(st.session_state.document_extracted_text)
 
@@ -951,12 +1017,70 @@ def render_analysis():
 
             st.session_state.messages = []
             doc_list_str = ", ".join(uploaded_doc_names) if uploaded_doc_names else "No documents"
-            prompt = f"I have submitted the application for '{current_c_name}' (App No: {current_a_no}). I uploaded the following documents: {doc_list_str}. \n\nPlease confirm receipt of these documents, list them back to me, and ask if you should proceed with the analysis."
+            prompt = (
+                f"Begin Phase 1: App submitted for '{current_c_name}' (No: {current_a_no}) "
+                f"with: {doc_list_str}. "
+                "First, call `list_uploaded_documents`, then analyze each document one by one "
+                "using `analyze_document`, summarizing ML features and 5Cs insights after each file. "
+                "When all documents are done, call `extract_document_data` exactly once to finalize aggregation."
+            )
             st.session_state.auto_submit_prompt = prompt
 
             st.rerun()
 
         st.markdown("---")
+        with st.expander("🧭 Orchestrated Analysis Phases", expanded=False):
+            st.caption("Trigger each phase explicitly. The agent will obey these stepwise instructions.")
+            if st.button("▶️ Phase 2: Web Research & Risk", use_container_width=True):
+                phase2_prompt = (
+                    "Proceed to Phase 2: Start web research for the current company. "
+                    "Use `crawl_web_for_litigation` to perform granular web due diligence, "
+                    "compute litigation_count, positive/negative news counts, news_sentiment_score and risk_score, "
+                    "and then present a seriousness-aware summary for human review."
+                )
+                st.session_state.auto_submit_prompt = phase2_prompt
+                st.session_state.waiting_for_human = False
+                st.session_state.interrupt_data = None
+                st.experimental_rerun()
+
+            if st.button("▶️ Phase 3: Extract Numerical Features", use_container_width=True):
+                phase3_prompt = (
+                    "Proceed to Phase 3: Extract numerical features. "
+                    "Use `extract_numerical_features` to synthesize the 6 ML features "
+                    "(Company_Age, CIBIL_Commercial_Score, GSTR_Declared_Revenue_Cr, "
+                    "Bank_Statement_Inflow_Cr, Litigation_Count, News_Sentiment_Score). "
+                    "Ask me via interrupt if any critical values are missing or inconsistent."
+                )
+                st.session_state.auto_submit_prompt = phase3_prompt
+                st.session_state.waiting_for_human = False
+                st.session_state.interrupt_data = None
+                st.experimental_rerun()
+
+            if st.button("▶️ Phase 4: Run ML Scoring", use_container_width=True):
+                phase4_prompt = (
+                    "Proceed to Phase 4: Run ML scoring. "
+                    "Call `run_xgboost_scorer` with the final feature JSON, "
+                    "present the model decision (approval, limit, rate, probabilities) and "
+                    "show how the rejection rules interact with this decision. "
+                    "Pause for my confirmation or override before treating the decision as final."
+                )
+                st.session_state.auto_submit_prompt = phase4_prompt
+                st.session_state.waiting_for_human = False
+                st.session_state.interrupt_data = None
+                st.experimental_rerun()
+
+            if st.button("▶️ Phase 5: Generate CAM Report", use_container_width=True):
+                phase5_prompt = (
+                    "Proceed to Phase 5: Generate CAM. "
+                    "Call `generate_cam_report` for the current company using all prior analysis, "
+                    "ask me for a final confirmation via interrupt, and then return the final CAM "
+                    "markdown so the UI can display it and offer a PDF download."
+                )
+                st.session_state.auto_submit_prompt = phase5_prompt
+                st.session_state.waiting_for_human = False
+                st.session_state.interrupt_data = None
+                st.experimental_rerun()
+
         if st.button("← Back to Dashboard"):
             switch_page("dashboard")
 
@@ -1033,6 +1157,7 @@ def render_analysis():
             st.session_state.waiting_for_human = False
             interrupt_data = st.session_state.interrupt_data
             st.session_state.interrupt_data = None
+            st.session_state.interrupt_id = None
 
             with st.chat_message("assistant", avatar="🧠"):
                 with st.status("🔄 Resuming agent with your input...", expanded=True) as status:
@@ -1062,6 +1187,8 @@ def render_analysis():
 def _render_cam_extras():
     """Render the CAM download button and explainability chart."""
     if st.session_state.cam_content:
+        import pandas as pd
+        import numpy as np
         # SHAP explainability chart
         st.subheader("📈 Model Explainability (Feature Impact)")
         features = [
@@ -1103,8 +1230,6 @@ def main():
             render_dashboard()
         elif st.session_state.current_page == "analysis":
             render_analysis()
-        elif st.session_state.current_page == "rag_dashboard":
-            render_rag_dashboard()
         else:
             render_dashboard()
 

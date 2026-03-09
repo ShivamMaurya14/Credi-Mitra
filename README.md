@@ -24,23 +24,45 @@
 
 Credi-Mitra employs a sophisticated **Dual-Model Control System** that separates reasoning from heavy-duty analysis:
 
-1.  **The Orchestrator (Llama 3-8B/70B)**: The "Manager" who plans the analysis, calls tools, and interacts with the user.
-2.  **The Analyst (Gemini 1.5 Pro)**: The "Subject Matter Expert" who handles high-fidelity OCR, massive table extractions, and complex financial cross-referencing.
+1.  **The Orchestrator (Llama 3.3 / Gemini 2.5)**: The "Manager" who plans the analysis, calls tools, and interacts with the officer via **LangGraph**.
+2.  **The Analyst (Gemini 1.5 Pro / Llama 3.1)**: The "Subject Matter Expert" who handles high-fidelity OCR, massive table extractions via **LlamaParse**, and vector retrieval from **Pinecone Cloud**.
 
 This separation ensures **lightning-fast UI response times** while maintaining **surgical precision** in financial data extraction.
 
 ---
 
+## ⚡ The 5-Phase Systematic Appraisal Workflow
+
+The agent follows a rigorous, sequential investigation through 5 distinct phases to ensure zero-error underwriting:
+
+### **Phase 1: Sequential Document Intelligence**
+- **Verification**: Automatically verifies 5 mandatory document categories (App Form, CIBIL, GST, Bank Statements, Annual Reports).
+- **RAG Analysis**: Uses **LlamaParse** and **Pinecone** to extract numerical ML features and qualitative **5Cs Insights** (Character, Capacity, Capital, Collateral, Conditions).
+- **Professional Reporting**: Presents a structured appraisal report with currency standardization (Cr/Lakh).
+
+### **Phase 2: External Risk Discovery**
+- **Litigation Search**: Crawls the web via **Tavily AI** for NCLT filings, regulatory defaults, or legal disputes.
+- **Sentiment Analysis**: Cross-references internal document data with live external news sentiment.
+
+### **Phase 3: Feature Engineering**
+- **Persistence**: Finalizes and locks in numerical features into a standardized JSON for machine learning.
+- **Manual Overrides**: Allows the Human Officer to manually correct or set values via direct chat commands.
+
+### **Phase 4: ML Scoring & Decisioning**
+- **XGBoost Engine**: Processes all engineered features (Company Age, CIBIL, News Sentiment, etc.) to predict Approval likelihood and recommended limits.
+
+### **Phase 5: Automated CAM Generation**
+- **Memorandum Drafting**: Generates a professional **Credit Appraisal Memorandum (CAM)** summarizing every insight, metric, and decision factor found during the process.
+
+---
+
 ## ✨ Key Pillars of Intelligence
 
-### 🧬 1. High-Fidelity Extraction (LlamaParse)
-We don't use simple OCR. Credi-Mitra integrates **LlamaParse** to convert complex multi-page financial PDFs (Audit Reports, CIBIL, Bank Statements) into clean, structured **Markdown**. 
-*   **Impact**: Preserves table hierarchies and numerical alignment, reducing "hallucination" in financial metrics by 85%.
+### 🧬 1. High-Fidelity Extraction (LlamaParse & Pinecone)
+We integrate **LlamaParse** to convert complex financial PDFs into structured Markdown, which is then indexed into **Pinecone Cloud** for semantic retrieval. This reduces "hallucination" in financial metrics by 85%.
 
-### 🌐 2. Granular Web Due Diligence (Tavily AI)
-The agent performs autonomous legal and sentiment research via **Tavily**.
-*   **Granular Analysis**: Instead of reading one summary, the agent scrutinizes search results **one-by-one**.
-*   **Risk Detection**: Specifically maps NCLT filings, RBI regulatory penalties, and negative news sentiment into numerical risk features.
+### 🌐 2. Granularity Aware Web Research
+The agent performs autonomous research, scrutinizing search results **one-by-one** to map NCLT filings and RBI penalties into numerical risk features using **Tavily Search**.
 
 ### 🤖 3. Predictive Decisioning (XGBoost Engine)
 Gathered features are fed into a pre-trained **XGBoost Classifier** (97% accuracy on 5,000+ corporate records).
@@ -48,7 +70,7 @@ Gathered features are fed into a pre-trained **XGBoost Classifier** (97% accurac
 *   **Outputs**: Approval status, Credit Limit Recommendation (₹), and Risk-Based Interest Rate (%).
 
 ### 🤝 4. Human-In-The-Loop (HITL)
-The "Sequential Review" protocol ensures the agent never goes rogue. Every analytical step (Extraction, Search, Scoring) generates a **Review Panel**. The human officer can correct data on the fly before the agent proceeds.
+The "Sequential Review" protocol ensures the agent never goes rogue. Every analytical step (Extraction, Search, Scoring) generates a **Review Panel** for the human officer to approve or correct.
 
 ---
 
@@ -56,16 +78,16 @@ The "Sequential Review" protocol ensures the agent never goes rogue. Every analy
 
 ```mermaid
 graph TD
-    A[User Uploads Docs] --> B[Officer Manual Entry]
+    A[User Uploads Docs] --> B[Verification Step - HITL]
     B --> C{Agent Orchestrator}
-    C -->|Tool 1| D[LlamaParse: High-Fidelity Extraction]
-    C -->|Tool 2| E[Tavily: Granular Web Research]
-    D --> F[Verification Step - HITL]
+    C -->|Phase 1| D[RAG: LlamaParse + Pinecone]
+    C -->|Phase 2| E[Tavily: Web Litigation]
+    D --> F[Review Panel - HITL]
     E --> F
-    F -->|Approved| G[extract_numerical_features]
+    F -->|Approved| G[Feature Engineering]
     G --> H[XGBoost Scorer]
     H --> I[generate_cam_report]
-    I --> J[Final PDF Export]
+    I --> J[Final CAM Export]
 ```
 
 ---
@@ -75,12 +97,12 @@ graph TD
 | Layer | Technology |
 | :--- | :--- |
 | **Agentic Framework** | **LangGraph** (Stateful ReAct Agent) |
-| **Logic/Reasoning** | **Groq** (Llama 3.1 8B/70B) |
-| **Financial Analysis** | **Google Gemini 1.5 Pro** |
-| **Document Parsing** | **LlamaParse** (Deep Markdown Extraction) |
+| **Reasoning Model** | **Groq Llama 3.3** / **Google Gemini 2.5** |
+| **Vector Database** | **Pinecone Cloud** (Serverless RAG) |
+| **Parsing Engine** | **LlamaParse** (Deep Markdown Extraction) |
 | **Web Intel** | **Tavily AI** (Credit Research Mode) |
 | **ML Engine** | **XGBoost** (Binary Classification + Regression) |
-| **UI Environment** | **Streamlit** (Stateful Chat & Multi-Modal UI) |
+| **UI Environment** | **Streamlit** (Stateful Multi-Modal UI) |
 
 ---
 
@@ -100,36 +122,28 @@ pip install -r requirements.txt
 Create a `.env` file in the root directory:
 ```env
 # Essential API Keys
+PINECONE_API_KEY=pcsk_...
 GROQ_API_KEY=gsk_...
 GOOGLE_API_KEY=AIza...
 TAVILY_API_KEY=tvly-...
 LLAMA_CLOUD_API_KEY=llx-...
 
-# Model Selection
-ORCHESTRATOR_MODEL=llama-3.1-8b-instant
-ANALYSIS_MODEL=gemini-1.5-pro
-```
 
 ### Launch
 ```bash
 streamlit run app.py
 ```
-
 ---
 
-## 📂 Repository Structure
-*   `app.py`: The heart of the UI, managing the state and HITL interactions.
-*   `agent_graph.py`: The "Brain" containing the LangGraph logic and specialized tools.
-*   `model/`: Contains `model.json` (XGBoost weights) and training notebooks.
-*   `uploads/`: Local protected storage for extracted intelligence.
-
----
-
-##🔮 Roadmap
+## 🔮 Roadmap
 - [*] **Multi-Model Support**: Independent selection of Orchestrator/Analyst.
-- [*] **LlamaParse Integration**: High-fidelity financial parsing.
-- [ ] **LiveKit Integration**: Voice-based credit interview for bank officers.
-- [ ] **Blockchain Audit**: Immutable log of agent decisions for compliance.
+- [*] **Pinecone RAG Integration**: Long-term vector memory for financial data.
+- [ ] **Email & Communication APIs**: Automated Acceptance/Rejection processing & customer notification via SendGrid/Twilio.
+- [ ] **Database Autofetch**: Instant data ingestion of historical client records using only an Application No.
+- [ ] **Direct Government API Pull**: Real-time verification of GST/MCA/CIBIL data without relying on document uploads.
+- [ ] **Automated Sanction Engine**: Immediate generation of the final legal Bank Sanction Letter on professional letterheads.
+- [ ] **LiveKit Voice Appraisal**: AI-driven voice interview of borrowers for character verification (Character 5C).
+- [ ] **Blockchain Decision Ledger**: Immutable, cryptographically signed logs of all AI-underwriting decisions for audit and compliance.
 
 <div align="center">
 

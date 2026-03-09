@@ -1,13 +1,6 @@
 """
 RAG (Retrieval-Augmented Generation) Module for Credi-Mitra
-Unified module combining document management, embedding, retrieval, and LLM integration.
-
-Components:
-- ChromaDBManager: Vector DB operations
-- PDFProcessor: PDF text extraction  
-- DocumentManager: High-level document API
-- RAG Tools: LangGraph tool definitions for agent integration
-- RAG UI: Streamlit dashboard components
+Unified module for document management and vector retrieval using Pinecone Cloud.
 """
 
 import os
@@ -18,151 +11,312 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import hashlib
+import nest_asyncio
+import streamlit as st
 
-import chromadb
 import pdfplumber
 import pypdf
-import streamlit as st
 from langchain_core.tools import tool
+from llama_parse import LlamaParse
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+try:
+    from pinecone import Pinecone, ServerlessSpec
+except ImportError:
+    Pinecone = None
+
+# Apply nest_asyncio for LlamaParse
+nest_asyncio.apply()
 
 # ═══════════════════════════════════════════════
-# PART 1: CHROMA DB MANAGER
+# PART 1: PINECONE DB MANAGER
 # ═══════════════════════════════════════════════
 
-class ChromaDBManager:
-    """Vector database management with persistent storage"""
+class PineconeDBManager:
+    """Vector database management via Pinecone Cloud"""
     
-    def __init__(self, db_path="./chroma_db"):
-        self.db_path = db_path
-        os.makedirs(db_path, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=db_path)
-        self._init_collections()
-    
-    def _init_collections(self):
-        """Initialize document collections"""
-        self.documents = self.client.get_or_create_collection(
-            name="credit_documents",
-            metadata={"description": "Document chunks for search"},
-            distance_function="cosine"
-        )
-        self.metadata = self.client.get_or_create_collection(
-            name="document_metadata",
-            metadata={"description": "Document metadata"},
-            distance_function="cosine"
-        )
-    
+    def __init__(self, index_name="credi-mitra", model_choice=None):
+        self.api_key = os.environ.get("PINECONE_API_KEY")
+        if not self.api_key:
+            raise ValueError("PINECONE_API_KEY not found in environment")
+        
+        if Pinecone is None:
+            raise ImportError("pinecone-client is not installed. Run 'pip install pinecone-client'")
+
+        self.pc = Pinecone(api_key=self.api_key)
+        self.index_name = index_name
+        
+        # ── Resolve Embedding Model Provider ──
+        # We strictly honor suffixes if present, otherwise fallback to keyword detection.
+        model_choice_str = str(model_choice).lower() if model_choice else ""
+        
+        if "(openai)" in model_choice_str:
+            provider = "openai"
+        elif "(google)" in model_choice_str:
+            provider = "google"
+        elif "(groq)" in model_choice_str:
+            provider = "google" # Default Groq reasoning to Google embeddings
+        else:
+            # Fallback keyword detection
+            provider = "google"
+            if "openai" in model_choice_str or "gpt" in model_choice_str:
+                # Special Case: skip "gpt-oss" which is Groq-hosted
+                if "gpt-oss" not in model_choice_str:
+                    provider = "openai"
+            elif "google" in model_choice_str or "gemini" in model_choice_str:
+                provider = "google"
+        
+        gemini_api_key = os.environ.get("gemini_api_key") or os.environ.get("GOOGLE_API_KEY")
+        openai_api_key = os.environ.get("OPENAI_API_KEY")
+
+        if provider == "openai":
+            # OpenAI embeddings (text-embedding-3-small) → 1536-dim
+            self.embedding_function = OpenAIEmbeddings(
+                model="text-embedding-3-small", 
+                openai_api_key=openai_api_key
+            )
+            self.dimension = 1536
+        else:
+            # Google Gemini embeddings (models/gemini-embedding-001) → 3072-dim
+            self.embedding_function = GoogleGenerativeAIEmbeddings(
+                model="models/gemini-embedding-001",
+                google_api_key=gemini_api_key,
+                task_type="retrieval_query"
+            )
+            self.dimension = 3072
+
+        # ── Handle Pinecone Index Recreation ──
+        existing_indexes = [idx.name for idx in self.pc.list_indexes()]
+        
+        should_create = False
+        if self.index_name not in existing_indexes:
+            should_create = True
+        else:
+            # Check if dimension matches
+            try:
+                index_info = self.pc.describe_index(self.index_name)
+                if index_info.dimension != self.dimension:
+                    print(f"[RAG] Dimension mismatch ({index_info.dimension} vs {self.dimension}). Recreating index...")
+                    self.pc.delete_index(self.index_name)
+                    # Wait for deletion
+                    import time
+                    for _ in range(10):
+                        if self.index_name not in [idx.name for idx in self.pc.list_indexes()]:
+                            break
+                        time.sleep(2)
+                    should_create = True
+            except Exception:
+                should_create = True
+        
+        if should_create:
+            self.pc.create_index(
+                name=self.index_name,
+                dimension=self.dimension,
+                metric='cosine',
+                spec=ServerlessSpec(cloud='aws', region='us-east-1')
+            )
+            # Wait for index to be ready
+            import time
+            while not self.pc.describe_index(self.index_name).status['ready']:
+                time.sleep(1)
+        
+        self.index = self.pc.Index(self.index_name)
+
+    def reset_database(self):
+        """Delete all vectors in the index"""
+        try:
+            # Ignore errors if namespace is empty/not found (404)
+            self.index.delete(delete_all=True)
+            return True
+        except Exception as e:
+            # Check if it's a 404 namespace error and skip it
+            if "404" in str(e) or "Namespace not found" in str(e):
+                return True
+            print(f"Error resetting Pinecone: {e}")
+            return False
+
     def add_document(self, doc_id: str, company: str, doc_type: str, 
-                     content: str, file_name: str, metadata: Dict = None) -> bool:
-        """Add document with chunks and metadata"""
+                      content: str, file_name: str, metadata: Optional[Dict] = None) -> bool:
+        """Add document with chunks and metadata to Pinecone"""
         try:
             metadata = metadata or {}
-            chunks = self._chunk_text(content, chunk_size=1000, overlap=100)
             
+            # Use RecursiveCharacterTextSplitter for better semantic chunking
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=150,
+                length_function=len,
+                is_separator_regex=False,
+            )
+            chunks = text_splitter.split_text(content)
+            
+            vectors = []
             for idx, chunk in enumerate(chunks):
                 chunk_id = f"{doc_id}_chunk_{idx}"
-                self.documents.add(
-                    ids=[chunk_id],
-                    documents=[chunk],
-                    metadatas=[{
-                        "doc_id": doc_id, "company": company, "type": doc_type,
-                        "file": file_name, "chunk": idx, "timestamp": datetime.now().isoformat()
-                    }]
-                )
+                # Handle potential embedding errors
+                try:
+                    embedding = self.embedding_function.embed_query(chunk)
+                except Exception as e:
+                    print(f"[RAG] Embedding failed for chunk {idx}: {e}")
+                    continue
+                
+                vectors.append({
+                    "id": chunk_id,
+                    "values": embedding,
+                    "metadata": {
+                        "text": chunk,
+                        "doc_id": doc_id, 
+                        "company": company, 
+                        "type": doc_type,
+                        "file": file_name, 
+                        "chunk": idx, 
+                        "timestamp": datetime.now().isoformat(),
+                        **metadata
+                    }
+                })
             
-            # Store full metadata
-            self.metadata.add(
-                ids=[doc_id],
-                documents=[content[:500]],
-                metadatas=[{
-                    "company": company, "type": doc_type, "file": file_name,
-                    "created": datetime.now().isoformat(),
-                    **metadata
-                }]
-            )
+            # Upsert in batches of 100
+            for i in range(0, len(vectors), 100):
+                self.index.upsert(vectors=vectors[i:i+100])
+            
             return True
         except Exception as e:
-            print(f"Error adding document: {e}")
+            print(f"Error adding to Pinecone: {e}")
             return False
-    
+
     def search_documents(self, query: str, company: str = None, 
                         doc_type: str = None, top_k: int = 5) -> List[Dict]:
-        """Semantic search across documents"""
+        """Search Pinecone"""
         try:
-            where_filter = {}
-            if company:
-                where_filter["company"] = company
-            if doc_type:
-                where_filter["type"] = doc_type
+            filter_dict = {}
+            if company: filter_dict["company"] = company
+            if doc_type: filter_dict["type"] = doc_type
             
-            results = self.documents.query(
-                query_texts=[query],
-                n_results=top_k,
-                where=where_filter if where_filter else None
+            embedding = self.embedding_function.embed_query(query)
+            
+            results = self.index.query(
+                vector=embedding,
+                top_k=top_k,
+                include_metadata=True,
+                filter=filter_dict if filter_dict else None
             )
             
-            return [{
-                "id": results["ids"][0][i],
-                "content": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i],
-                "similarity": 1 - results["distances"][0][i] if results["distances"] else 0
-            } for i in range(len(results["ids"][0]))]
+            output = []
+            for res in results.get("matches", []):
+                output.append({
+                    "id": res["id"],
+                    "content": res["metadata"].get("text", ""),
+                    "metadata": res["metadata"],
+                    "similarity": res["score"]
+                })
+            return output
         except Exception as e:
-            print(f"Search error: {e}")
+            print(f"Pinecone search error: {e}")
+            if hasattr(e, 'body'):
+                print(f"Error body: {e.body}")
             return []
-    
+
+    def add_web_result(self, result_id: str, company: str, content: str, metadata: Optional[Dict] = None) -> bool:
+        """Add web result to Pinecone"""
+        try:
+            embedding = self.embedding_function.embed_query(content)
+            self.index.upsert(vectors=[{
+                "id": result_id,
+                "values": embedding,
+                "metadata": {
+                    "text": content,
+                    "company": company,
+                    "type": "web_search",
+                    "timestamp": datetime.now().isoformat(),
+                    **(metadata or {})
+                }
+            }])
+            return True
+        except Exception as e:
+            print(f"Error adding web result to Pinecone: {e}")
+            return False
+
+    def search_web_results(self, query: str, company: Optional[str] = None, top_k: int = 5) -> List[Dict]:
+        """Search across stored web findings in Pinecone"""
+        try:
+            filter_dict = {"type": "web_search"}
+            if company: filter_dict["company"] = company
+            
+            embedding = self.embedding_function.embed_query(query)
+            results = self.index.query(
+                vector=embedding,
+                top_k=top_k,
+                include_metadata=True,
+                filter=filter_dict
+            )
+            
+            output = []
+            for res in results.get("matches", []):
+                output.append({
+                    "id": res["id"],
+                    "content": res["metadata"].get("text", ""),
+                    "metadata": res["metadata"],
+                    "similarity": res["score"]
+                })
+            return output
+        except Exception as e:
+            print(f"Pinecone web search error: {e}")
+            return []
+
     def list_documents(self, company: str = None) -> List[Dict]:
-        """List all documents, optionally filtered by company"""
+        """List documents by querying metadata for unique doc_ids"""
         try:
-            all_docs = self.metadata.get(
-                where={"company": company} if company else None
+            # Query with a dummy vector and high top_k to get a representative sample of docs
+            # Or better, fetch by prefix if the doc_id pattern allows.
+            # For brevity in this RAG module, we query by metadata.
+            results = self.index.query(
+                vector=[0.0] * 768, # dummy vector
+                top_k=1000,
+                include_metadata=True,
+                filter={"company": company} if company else None
             )
-            return [{
-                "id": all_docs["ids"][i],
-                "company": all_docs["metadatas"][i].get("company"),
-                "type": all_docs["metadatas"][i].get("type"),
-                "file": all_docs["metadatas"][i].get("file")
-            } for i in range(len(all_docs["ids"]))]
-        except Exception as e:
-            print(f"List error: {e}")
-            return []
-    
-    def update_document_metadata(self, doc_id: str, updates: Dict) -> bool:
-        """Update document metadata"""
-        try:
-            current = self.metadata.get(ids=[doc_id])
-            if not current["ids"]:
-                return False
             
-            metadata = current["metadatas"][0]
-            metadata.update(updates)
-            self.metadata.update(ids=[doc_id], metadatas=[metadata])
-            return True
+            unique_docs = {}
+            for res in results.get("matches", []):
+                meta = res["metadata"]
+                doc_id = meta.get("doc_id")
+                if doc_id and doc_id not in unique_docs:
+                    unique_docs[doc_id] = {
+                        "id": doc_id,
+                        "company": meta.get("company"),
+                        "type": meta.get("type"),
+                        "file": meta.get("file")
+                    }
+            return list(unique_docs.values())
         except Exception as e:
-            print(f"Update error: {e}")
-            return False
-    
+            print(f"Pinecone list error: {e}")
+            return []
+
+    def update_document_metadata(self, doc_id: str, updates: Dict) -> bool:
+        """Partial updates in Pinecone are limited, so we skip for now or re-upsert if needed"""
+        return False
+
     def delete_document(self, doc_id: str) -> bool:
-        """Delete document and all chunks"""
+        """Delete all chunks for a document"""
         try:
-            chunks = self.documents.get(where={"doc_id": doc_id})
-            if chunks["ids"]:
-                self.documents.delete(ids=chunks["ids"])
-            self.metadata.delete(ids=[doc_id])
+            self.index.delete(filter={"doc_id": doc_id})
             return True
         except Exception as e:
-            print(f"Delete error: {e}")
+            print(f"Pinecone delete error: {e}")
             return False
-    
+
     @staticmethod
     def _chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
-        """Split text into chunks with overlap"""
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-            chunks.append(text[start:end])
-            start = end - overlap
-        return chunks
+        """Split text into chunks using RecursiveCharacterTextSplitter"""
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=overlap,
+            length_function=len,
+            is_separator_regex=False,
+        )
+        return text_splitter.split_text(str(text))
 
 
 # ═══════════════════════════════════════════════
@@ -174,19 +328,30 @@ class PDFProcessor:
     
     @staticmethod
     def extract_text(pdf_path: str) -> str:
-        """Extract text from PDF with fallback methods"""
-        text = ""
+        """Extract text from PDF using LlamaParse with fallback"""
+        llama_key = os.environ.get("llama_cloud_key") or os.environ.get("LLAMA_CLOUD_API_KEY")
         
-        # Try pdfplumber first
+        if llama_key:
+            try:
+                parser = LlamaParse(api_key=llama_key, result_type="markdown", verbose=False)
+                parsed_docs = parser.load_data(pdf_path)
+                if parsed_docs:
+                    return "\n".join([d.text for d in parsed_docs])
+            except Exception as e:
+                print(f"LlamaParse failed: {e}. Falling back to standard extraction.")
+
+        # Fallback 1: pdfplumber
+        text = ""
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 for page in pdf.pages:
                     text += page.extract_text() or ""
-            return text
+            if text.strip():
+                return text
         except:
             pass
         
-        # Fallback to pypdf
+        # Fallback 2: pypdf
         try:
             with open(pdf_path, 'rb') as f:
                 reader = pypdf.PdfReader(f)
@@ -194,7 +359,7 @@ class PDFProcessor:
                     text += page.extract_text() or ""
             return text
         except Exception as e:
-            print(f"PDF extraction failed: {e}")
+            print(f"All PDF extraction methods failed: {e}")
             return ""
     
     @staticmethod
@@ -216,24 +381,61 @@ class PDFProcessor:
 # ═══════════════════════════════════════════════
 
 _db_manager = None
-_doc_storage = "./documents_storage"
+_LAST_MODEL_PROVIDER = None
 
-def get_document_manager():
-    """Get singleton DocumentManager instance"""
-    global _db_manager
-    if _db_manager is None:
-        _db_manager = ChromaDBManager()
+def get_document_manager(model_choice=None):
+    """Get singleton DocumentManager instance using Pinecone Cloud.
+    Recreates manager if switching between Google and OpenAI to ensure correct embedding dimensions.
+    """
+    global _db_manager, _LAST_MODEL_PROVIDER
+    
+    # Auto-resolve from session state if not provided
+    if model_choice is None:
+        model_choice = st.session_state.get("selected_model")
+    
+    # Identify provider for current choice
+    m_lower = str(model_choice).lower() if model_choice else ""
+    
+    if "(openai)" in m_lower:
+        current_provider = "openai"
+    elif "(google)" in m_lower or "(groq)" in m_lower:
+        current_provider = "google"
+    else:
+        # Fallback keyword detection
+        if "openai" in m_lower or "gpt" in m_lower:
+            if "gpt-oss" in m_lower: current_provider = "google"
+            else: current_provider = "openai"
+        else:
+            current_provider = "google"
+    
+    # If no manager exists OR provider changed, recreate manager
+    if _db_manager is None or current_provider != _LAST_MODEL_PROVIDER:
+        _db_manager = PineconeDBManager(model_choice=model_choice)
+        _LAST_MODEL_PROVIDER = current_provider
+        print(f"[CREDI-MITRA] Vector Store initialized for {current_provider.upper()} embeddings")
+        
     return DocumentManager(_db_manager)
 
 class DocumentManager:
     """High-level API for document operations"""
     
-    def __init__(self, db_manager: ChromaDBManager):
+    def __init__(self, db_manager: PineconeDBManager):
         self.db = db_manager
-        os.makedirs(_doc_storage, exist_ok=True)
+        self.dimension = db_manager.dimension
+        os.makedirs(os.environ.get("DOC_STORAGE_PATH", "./documents_storage"), exist_ok=True)
+
+    def reset_session(self):
+        """Clear all database data and remove cached text files"""
+        self.db.reset_database()
+        # Also clear temp if needed
+        import shutil
+        if os.path.exists("temp"):
+            shutil.rmtree("temp")
+            os.makedirs("temp", exist_ok=True)
+        return True
     
     def upload_pdf(self, pdf_file_path: str, company_name: str, 
-                   doc_type: str, metadata: Dict = None) -> Dict:
+                   doc_type: str, metadata: Optional[Dict] = None) -> Dict:
         """Upload and process PDF"""
         try:
             doc_id = str(uuid.uuid4())
@@ -256,6 +458,7 @@ class DocumentManager:
                 "status": "success",
                 "doc_id": doc_id,
                 "file": file_name,
+                "text_content": text,
                 "metrics": structured
             }
         except Exception as e:
@@ -266,6 +469,10 @@ class DocumentManager:
         """Search across documents"""
         return self.db.search_documents(query, company, doc_type, top_k)
     
+    def search_web_results(self, query: str, company: str = None, top_k: int = 5) -> List[Dict]:
+        """Search across web findings"""
+        return self.db.search_web_results(query, company, top_k)
+
     def list_documents(self, company: str = None) -> List[Dict]:
         """List documents"""
         return self.db.list_documents(company)
@@ -279,11 +486,16 @@ class DocumentManager:
         return self.db.delete_document(doc_id)
     
     def get_document_summary(self, doc_id: str) -> Dict:
-        """Get document details"""
-        docs = self.db.metadata.get(ids=[doc_id])
-        if not docs["ids"]:
-            return {}
-        return docs["metadatas"][0] if docs["metadatas"] else {}
+        """Get document details from Pinecone metadata"""
+        results = self.db.index.query(
+            vector=[0.0] * self.dimension,
+            top_k=1,
+            include_metadata=True,
+            filter={"doc_id": doc_id}
+        )
+        if results.get("matches"):
+            return results["matches"][0]["metadata"]
+        return {}
     
     @staticmethod
     def _extract_metrics(text: str) -> Dict:
@@ -310,9 +522,18 @@ class DocumentManager:
 @tool
 def search_company_documents(query: str, company_name: str = "", 
                             document_type: str = "") -> str:
-    """Search documents by semantic query"""
+    """Search uploaded documents by semantic query."""
     mgr = get_document_manager()
     results = mgr.search_documents(query, company_name, document_type)
+    return json.dumps({"results": results, "count": len(results)})
+
+@tool
+def search_analyzed_web_findings(query: str, company_name: str = "") -> str:
+    """Search pre-analyzed web research results for a company.
+    Use this to find specific mentions of litigation, NCLT, or sentiment from previous web crawls.
+    """
+    mgr = get_document_manager()
+    results = mgr.search_web_results(query, company_name)
     return json.dumps({"results": results, "count": len(results)})
 
 @tool
@@ -330,8 +551,9 @@ def extract_key_metrics_from_db(company_name: str = "") -> str:
     metrics = {}
     for doc in docs:
         summary = mgr.get_document_summary(doc["id"])
-        metrics.update({k: v for k, v in summary.items() 
-                       if k in ["revenue", "cibil", "gst", "litigation"]})
+        if summary:
+            metrics.update({k: v for k, v in summary.items() 
+                           if k in ["revenue", "cibil", "gst", "litigation"]})
     return json.dumps({"metrics": metrics})
 
 @tool
@@ -356,120 +578,9 @@ def get_rag_tools():
     """Export all RAG tools for agent"""
     return [
         search_company_documents,
+        search_analyzed_web_findings,
         get_company_documents_list,
         extract_key_metrics_from_db,
         update_document_findings,
         get_document_summary
     ]
-
-
-# ═══════════════════════════════════════════════
-# PART 5: STREAMLIT UI COMPONENTS
-# ═══════════════════════════════════════════════
-
-def render_rag_dashboard():
-    """Render RAG dashboard with 5 tabs"""
-    st.title("📚 RAG Document Intelligence")
-    
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Upload", "📚 Manage", "🔎 Search", "📊 Metrics", "✏️ Update"])
-    
-    with tab1:
-        render_upload_tab()
-    with tab2:
-        render_manage_tab()
-    with tab3:
-        render_search_tab()
-    with tab4:
-        render_metrics_tab()
-    with tab5:
-        render_update_tab()
-
-def render_upload_tab():
-    """Upload documents"""
-    st.subheader("Upload Company Documents")
-    company = st.text_input("Company Name")
-    doc_type = st.selectbox("Document Type", ["Annual Report", "CIBIL", "GST", "Bank Statements", "Other"])
-    file = st.file_uploader("Upload PDF", type="pdf")
-    
-    if st.button("🚀 Upload & Index", use_container_width=True):
-        if not company or not file:
-            st.error("Please fill all fields")
-            return
-        
-        with st.spinner("Processing..."):
-            mgr = get_document_manager()
-            result = mgr.upload_pdf(file.name, company, doc_type)
-            if result.get("status") == "success":
-                st.success(f"✅ Uploaded: {result.get('file')}")
-                st.json(result.get("metrics"))
-            else:
-                st.error(f"Error: {result.get('message')}")
-
-def render_manage_tab():
-    """List and manage documents"""
-    st.subheader("Manage Documents")
-    mgr = get_document_manager()
-    
-    company = st.text_input("Filter by Company (optional)")
-    docs = mgr.list_documents(company)
-    
-    if docs:
-        for doc in docs:
-            col1, col2 = st.columns([4, 1])
-            col1.write(f"📄 {doc['file']} ({doc['type']}) - {doc['company']}")
-            if col2.button("🗑️", key=doc['id']):
-                mgr.delete_document(doc['id'])
-                st.rerun()
-    else:
-        st.info("No documents found")
-
-def render_search_tab():
-    """Search documents"""
-    st.subheader("Search Documents")
-    query = st.text_input("Search query", placeholder="e.g., 'revenue', 'CIBIL', 'bank inflow'")
-    company = st.text_input("Filter by Company (optional)")
-    
-    if st.button("🔍 Search", use_container_width=True):
-        mgr = get_document_manager()
-        results = mgr.search_documents(query, company)
-        st.write(f"Found {len(results)} results:")
-        for r in results:
-            st.write(f"**{r['metadata'].get('file', 'Unknown')}** ({r['similarity']:.2%})")
-            st.caption(r['content'][:200] + "...")
-
-def render_metrics_tab():
-    """Extract metrics"""
-    st.subheader("Extract Financial Metrics")
-    company = st.text_input("Company Name")
-    
-    if st.button("🤖 Extract Metrics", use_container_width=True):
-        mgr = get_document_manager()
-        docs = mgr.list_documents(company)
-        all_metrics = {}
-        for doc in docs:
-            summary = mgr.get_document_summary(doc['id'])
-            all_metrics.update(summary)
-        
-        st.json(all_metrics) if all_metrics else st.info("No metrics extracted")
-
-def render_update_tab():
-    """Update document findings"""
-    st.subheader("Update Document Findings")
-    mgr = get_document_manager()
-    
-    company = st.text_input("Company Name")
-    docs = mgr.list_documents(company)
-    
-    if docs:
-        doc_options = {f"{d['file']} ({d['type']})": d['id'] for d in docs}
-        selected = st.selectbox("Select Document", list(doc_options.keys()))
-        doc_id = doc_options[selected]
-        
-        field = st.text_input("Field to Update")
-        value = st.text_input("New Value")
-        
-        if st.button("💾 Save", use_container_width=True):
-            mgr.update_document_data(doc_id, {field: value})
-            st.success("✅ Updated")
-    else:
-        st.info("No documents found")

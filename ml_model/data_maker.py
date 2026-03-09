@@ -1,6 +1,3 @@
-!pip install pandas numpy faker
-
-
 import pandas as pd
 import numpy as np
 from faker import Faker

@@ -14,14 +14,14 @@ import os
 import json
 import re
 import uuid
-import xgboost as xgb
-import pandas as pd
+# xgboost and pandas moved to internal functions to save memory
 from typing import Annotated, Any, Dict, List, Optional, Union
 from dotenv import load_dotenv
 
 import streamlit as st
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
@@ -29,11 +29,25 @@ from langgraph.types import interrupt, Command
 import time
 
 # Import RAG tools
-from rag import get_rag_tools
+from rag import get_rag_tools, get_document_manager
 
 # Load environment variables from .env file
-env_path = os.path.join(os.path.dirname(__file__), ".env")
-load_dotenv(dotenv_path=env_path)
+env_locations = [
+    ".env",
+    os.path.join("..", ".env"),
+    os.path.join(os.path.dirname(__file__), ".env"),
+    os.path.join(os.path.dirname(__file__), "..", ".env")
+]
+
+env_loaded = False
+for path in env_locations:
+    if os.path.exists(path):
+        load_dotenv(dotenv_path=path)
+        env_loaded = True
+        break
+
+if not env_loaded:
+    load_dotenv()
 
 # ──────────────────────────────────────────────
 # Configuration
@@ -42,44 +56,131 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 TAVILY_API_KEY = os.environ.get("tavily_api_key", os.environ.get("TAVILY_API_KEY", "")).strip()
 
-# Validate GROQ_API_KEY is set
 if not GROQ_API_KEY:
-    st.error("❌ GROQ_API_KEY not found in .env file. Please check your .env configuration.")
-    st.stop()
+    try:
+        st.error("❌ GROQ_API_KEY not found in .env file. Please check your .env configuration.")
+        st.stop()
+    except Exception:
+        raise ValueError("GROQ_API_KEY not found in environment variables.")
 
-# ── Global Cache ──
-# Used as a thread-safe fallback for st.session_state
 RELIABLE_UPLOAD_DIR = None
 RELIABLE_MODEL_NAME = None
 RELIABLE_ANALYSIS_MODEL = None
 
 def _get_tool_llm():
-    """ Returns the LLM instance for analysis tools, based on the 'Analysis Model' selection. """
-    model_choice = st.session_state.get("selected_analysis_model") or RELIABLE_ANALYSIS_MODEL or RELIABLE_MODEL_NAME or GROQ_MODEL
+    model_choice = st.session_state.get("selected_model") or RELIABLE_MODEL_NAME
+    if not model_choice:
+        raise ValueError("Model selection is missing in session state.")
     
     # Handle the "(Groq)" or "(Google)" suffix if present
     clean_model = str(model_choice).split(" (")[0].strip()
+
+    # ── Resolve Provider ──
+    model_choice_str = str(model_choice).lower()
     
-    if "gemini" in clean_model.lower() or "google" in str(model_choice).lower():
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        gemini_api_key = os.environ.get("gemini_api_key", "")
-        # Map to valid model names
-        if "pro" in clean_model.lower(): target = "gemini-1.5-pro"
-        elif "flash" in clean_model.lower(): target = "gemini-2.0-flash" # Default to latest flash
-        else: target = "gemini-2.0-flash-lite"
-        
-        return ChatGoogleGenerativeAI(model=target, temperature=0, api_key=gemini_api_key)
+    if "(google)" in model_choice_str:
+        provider = "google"
+    elif "(openai)" in model_choice_str:
+        provider = "openai"
+    elif "(groq)" in model_choice_str:
+        provider = "groq"
     else:
-        # Groq selection
+        # Fallback to keyword detection
+        if "gemini" in clean_model.lower() or "google" in clean_model.lower():
+            provider = "google"
+        elif "gpt" in clean_model.lower() or "openai" in clean_model.lower():
+            provider = "openai"
+        else:
+            provider = "groq"
+
+    # ── Initialize Model ──
+    if provider == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        gemini_api_key = os.environ.get("gemini_api_key", "") or os.environ.get("GOOGLE_API_KEY", "")
+        # Map to valid model names
+        m_low = clean_model.lower()
+        if clean_model.startswith("gemini-"):
+            target = clean_model
+        elif "3" in m_low:
+            target = "gemini-3"
+        elif "2.5" in m_low and "pro" in m_low:
+            target = "gemini-2.5-pro"
+        elif "2.5" in m_low and "flash-lite" in m_low:
+            target = "gemini-2.5-flash-lite"
+        elif "2.5" in m_low and "flash" in m_low:
+            target = "gemini-2.5-flash"
+        elif "pro" in m_low:
+            target = "gemini-1.5-pro"
+        else:
+            target = "gemini-1.5-flash"
+        return ChatGoogleGenerativeAI(
+            model=target, 
+            api_key=gemini_api_key, 
+            temperature=0.1,
+            model_kwargs={"tools": [{"google_search_retrieval": {}}]}
+        )
+
+    elif provider == "openai":
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        if "gpt-4o-mini" in clean_model.lower(): target = "gpt-4o-mini"
+        elif "gpt-4o" in clean_model.lower(): target = "gpt-4o"
+        elif "o1" in clean_model.lower(): target = "o1-mini"
+        elif "o3-mini" in clean_model.lower(): target = "o3-mini"
+        else: target = "gpt-4o-mini"
+        return ChatOpenAI(model=target, temperature=0, api_key=openai_api_key)
+
+    else:
+        # Groq selection (strictly using the chosen model)
         return ChatGroq(
-            model=clean_model if clean_model and clean_model != "default" else GROQ_MODEL,
+            model=clean_model,
             api_key=GROQ_API_KEY,
             temperature=0,
             max_retries=3
         )
 
+# ──────────────────────────────────────────────
+# Tool 0 — Set Numerical Feature
+# ──────────────────────────────────────────────
+@tool
+def set_numerical_feature(feature_name: str, value: float, reasoning: str) -> str:
+    """Store or update a specific numerical credit feature in the persistent database.
+    
+    Use this tool IMMEDIATELY when you find a financial metric in a document or news.
+    
+    Valid features:
+    - Company_Age (Years)
+    - CIBIL_Commercial_Score (300-900)
+    - GSTR_Declared_Revenue_Cr (Crores)
+    - Bank_Statement_Inflow_Cr (Crores)
+    - Litigation_Count (Number of cases)
+    - News_Sentiment_Score (-1.0 to 1.0)
+    
+    Args:
+        feature_name: The name of the feature to update.
+        value: The numerical value found.
+        reasoning: Short explanation of where/how you found this value.
+    """
+    valid_features = [
+        "Company_Age", "CIBIL_Commercial_Score", "GSTR_Declared_Revenue_Cr",
+        "Bank_Statement_Inflow_Cr", "Litigation_Count", "News_Sentiment_Score"
+    ]
+    if feature_name not in valid_features:
+        return f"Error: '{feature_name}' is invalid. Use: {', '.join(valid_features)}"
+
+    _update_ml_features({feature_name: value})
+    
+    history = st.session_state.get("feature_update_history", [])
+    history.append({"t": time.strftime("%H:%M:%S"), "f": feature_name, "v": value, "r": reasoning})
+    st.session_state["feature_update_history"] = history
+    
+    _update_analysis_summary("feature_update", {"feature": feature_name, "value": value, "reason": reasoning})
+    return f"Success: {feature_name} updated to {value}."
+
 # ── Step Review Helper ──
-CONTINUE_COMMANDS = {"continue", "next", "ok", "yes", "proceed", "go", "c", "n", "done", ""}
+CONTINUE_COMMANDS = {
+    "continue", "next", "ok", "yes", "proceed", "go", "c", "n", "done", "", 
+    "y", "yea", "yep", "yeah", "okay", "fine", "move on", "advance"
+}
 
 def _step_review(step_num: int, step_name: str, preview_lines: list) -> str:
     """
@@ -115,9 +216,9 @@ def _get_store_dir() -> str:
     save_dir = st.session_state.get("current_upload_dir", "")
     if save_dir and os.path.exists(save_dir):
         return save_dir
-    # Fallback: use temp_storage with thread_id
+    # Fallback: use temp with thread_id
     thread_id = st.session_state.get("thread_id", "default")
-    fallback = os.path.join("temp_storage", thread_id)
+    fallback = os.path.join("temp", thread_id)
     os.makedirs(fallback, exist_ok=True)
     return fallback
 
@@ -207,7 +308,7 @@ def extract_document_data(dummy_arg: str = "") -> str:
     # 2. Fallback to Bridge File (worker thread)
     if not document_text.strip():
         thread_id = st.session_state.get("thread_id", "default")
-        bridge_path = os.path.join("temp_storage", f"{thread_id}.txt")
+        bridge_path = os.path.join("temp", f"{thread_id}.txt")
         if os.path.exists(bridge_path):
             with open(bridge_path, "r") as f:
                 document_text = f.read()
@@ -318,8 +419,8 @@ def list_uploaded_documents() -> str:
 
 @tool
 def analyze_document(filename: str) -> str:
-    """Parse and analyze a single uploaded document. Features are extracted via LLM and saved to JSON.
-    Call this tool sequentially for EACH document found in list_uploaded_documents.
+    """Parse and analyze a single uploaded document. 
+    Indexes document in Pinecone Cloud and uses RAG to extract features.
     
     Args:
         filename: The exact filename of the document (e.g. 'CIBIL_Score_Report.pdf')
@@ -330,82 +431,94 @@ def analyze_document(filename: str) -> str:
         return f"Error: {filename} not found."
     
     doc_type = filename.split(".")[0].replace("_", " ")
+    company_name = st.session_state.get("company_name", "Unknown Company")
     ext = os.path.splitext(filename)[1].lower()
     
-    # ── EXTRACTION PHASE ──
-    file_text = ""
-    extract_method = "Standard"
+    # ── RAG INDEXING PHASE ──
+    mgr = get_document_manager()
     
-    try:
-        if ext in [".pdf", ".docx"]:
-            llama_key = os.environ.get("llama_cloud_key") or os.environ.get("LLAMA_CLOUD_API_KEY")
-            if not llama_key:
-                return "Error: LlamaParse API key not found."
-            
-            from llama_parse import LlamaParse
-            # We use markdown result type as it's best for document structure (tables)
-            parser = LlamaParse(api_key=llama_key, result_type="markdown", verbose=False)
-            parsed_docs = parser.load_data(file_path)
-            if not parsed_docs:
-                 return "Error: LlamaParse extraction returned no content."
-            file_text = "\n".join([d.text for d in parsed_docs])
-            extract_method = "LlamaParse (Markdown)"
-            
-        elif ext == ".csv":
-            df = pd.read_csv(file_path)
-            file_text = df.to_string(index=False)
-            extract_method = "Pandas CSV"
-            
-        elif ext in [".xlsx", ".xls"]:
-            df = pd.read_excel(file_path)
-            file_text = df.to_string(index=False)
-            extract_method = "Pandas Excel"
-            
-    except Exception as e:
-        return f"Error extracting {filename} via {extract_method}: {str(e)}"
+    upload_res = mgr.upload_pdf(file_path, company_name, doc_type)
+    if upload_res["status"] == "error":
+        return f"Error indexing {filename}: {upload_res['message']}"
+    
+    doc_id = upload_res["doc_id"]
+    file_text = upload_res.get("text_content", "") # LlamaParse result
 
-    if not file_text:
-        return f"Warning: No text could be extracted from {filename}."
+    # ── RAG FEATURE EXTRACTION PHASE ──
+    # We query the DB specifically for the 5Cs and ML features
+    feature_queries = {
+        "CIBIL": "What is the CIBIL or credit score?",
+        "Revenue": "What is the total revenue or turnover?",
+        "Bank_Inflow": "What is the total bank credit or inflow?",
+        "Litigation": "Are there any legal cases, NCLT, or disputes mentioned?",
+        "5Cs_Character": "Information about management, promoters, and integrity.",
+        "5Cs_Capacity": "Information about repayment ability and cash flow.",
+        "5Cs_Capital": "Information about net worth and equity.",
+        "5Cs_Collateral": "Information about security and assets offered.",
+        "5Cs_Conditions": "Information about industry outlook and market conditions."
+    }
+    
+    rag_findings = {}
+    from concurrent.futures import ThreadPoolExecutor
+    
+    def _run_single_rag(key_q_tuple):
+        key, q = key_q_tuple
+        search_res = mgr.search_documents(q, company_name, doc_type, top_k=3)
+        return key, "\n".join([r["content"] for r in search_res])
+
+    # Dramatically limit workers for 8GB RAM stability
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        results = list(executor.map(_run_single_rag, feature_queries.items()))
+        for key, context in results:
+            rag_findings[key] = context
 
     # ── AGGREGATE PERSISTENCE ──
-    # Push the extracted text into the session memory and bridge file so Tool 3 can see it
+    # Push the extracted text into the session memory
     doc_marker = f"\n\n--- Document: {filename} ---\n\n"
     new_text = doc_marker + file_text
-    
     current_agg = st.session_state.get("document_extracted_text", "")
     st.session_state.document_extracted_text = current_agg + new_text
     
     # Update bridge file for background threads/resumption
     thread_id = st.session_state.get("thread_id", "default")
-    os.makedirs("temp_storage", exist_ok=True)
-    bridge_path = os.path.join("temp_storage", f"{thread_id}.txt")
+    os.makedirs("temp", exist_ok=True)
+    bridge_path = os.path.join("temp", f"{thread_id}.txt")
     with open(bridge_path, "a") as f:
         f.write(new_text)
 
-    # ── ANALYSIS PHASE (Sent to Model for Analysis) ──
+    # ── ANALYSIS PHASE (LLM Synthesis of RAG Findings) ──
     extractor_llm = _get_tool_llm()
-    # Chunking: send up to 10,000 characters of clean extracted text
-    chunk = file_text[:10000]
     
+    combined_context = ""
+    for k, v in rag_findings.items():
+        combined_context += f"### {k}\n{v}\n\n"
+
     prompt = f"""
-    # FINANCIAL EXTRACTION MANDATE: {doc_type}
-    Document Filename: {filename}
-    Extraction Method: {extract_method}
+    # FINANCIAL ANALYSIS REPORT: {doc_type}
+    Company: {company_name}
     
-    TASK: Analyze the following extracted text/markdown and precisely extract JSON markers.
-    The text was extracted via LlamaParse; look for tables and structured data.
+    TASK: Based on the following RAG-retrieved contexts from the document, extract credit features.
     
-    REQUIRED JSON KEYS:
-    1. "Key_Entities": Object containing {{ "Name": "Role/Type" }}
-    2. "Financial_Metrics": Object containing {{ "Field": "Numerical Value" }}
-    3. "Risk_Flags": String summarizing any adverse findings or negative health signals.
-    4. "Litigation_Signals": Integer (count of legal cases/disputes specifically mentioned).
-    5. "Sentiment_Signal": Float (-1.0 to 1.0, where 1.0 is extremely healthy/positive).
+    CONTEXTS:
+    {combined_context}
     
-    EXTRACTED TEXT CONTENT:
-    {chunk}
+    REQUIRED JSON OUTPUT:
+    {{
+      "Key_Entities": {{ "Name": "Role" }},
+      "Financial_Metrics": {{ "Field": "Numerical Value" }},
+      "Risk_Flags": "Summary of risks",
+      "Litigation_Signals": 0,
+      "Sentiment_Signal": 0.0,
+      "Five_Cs": {{
+        "Character": "Score/Detail",
+        "Capacity": "Score/Detail",
+        "Capital": "Score/Detail",
+        "Collateral": "Score/Detail",
+        "Conditions": "Score/Detail"
+      }}
+    }}
     
-    Return ONLY JSON. No preamble.
+    Return ONLY JSON.
     """
     
     analysis_json = {}
@@ -476,25 +589,51 @@ def analyze_document(filename: str) -> str:
         "News_Sentiment_Score_Raw": float(str(sent_signal).replace(",","")) if sent_signal else 0.0
     })
 
-    # Prepare persistence updates for the preview display
+    # --- PROFESSIONAL REPORTING REFINEMENT ---
+    def _beauty_format(val):
+        """Format large numbers into Cr/Lakh for professional display"""
+        try:
+            clean_str = str(val).replace(",", "").replace("₹", "").strip()
+            num = float(clean_str)
+            if num >= 10000000: return f"₹{num/10000000:.2f} Cr"
+            if num >= 100000: return f"₹{num/100000:.2f} Lakhs"
+            if num > 1000: return f"{num:,.0f}"
+            return str(val)
+        except: return str(val)
+
+    cs_data = fuzzy_get(analysis_json, "five_c") or {}
+
     commit_log = []
     for k, v in mets.items():
         k_l = str(k).lower()
-        if any(x in k_l for x in ["cibil", "score", "revenue", "turnover", "inflow", "age", "incorp", "year"]):
-            commit_log.append(f"{k}: {v}")
-    if lit_signals: commit_log.append(f"Litigation Count: {lit_signals}")
-    if sent_signal: commit_log.append(f"Sentiment Signal: {sent_signal}")
+        if any(x in k_l for x in ["cibil", "score", "revenue", "turnover", "inflow", "age", "incorp", "year", "amount"]):
+            commit_log.append(f"• **{k}**: {_beauty_format(v)}")
 
-    # Build a highly specific findings report for the chat
+    if lit_signals: commit_log.append(f"• **Litigation Findings**: {lit_signals} incident(s)")
+    if sent_signal: commit_log.append(f"• **Sentiment Score**: {sent_signal}")
+
+    # Build the professional structured report
     preview = [
-        f"📍 **File Specifics — {doc_type}**",
-        f"Analysis Engine: {'Gemini Native (Multimodal)' if is_gemini and ext == '.pdf' else 'LlamaParse + LLM Chunks'}",
-        f"Detected Entities: {', '.join(list(ents.keys())) if ents else 'None'}",
-        f"Extracted Metrics: {', '.join([f'{k}={v}' for k, v in list(mets.items())]) if mets else 'None'}",
-        f"**CRITICAL RISK EVALUATION**: {str(risks)[:300]}",
+        f"📂 **DOCUMENT APPRAISAL: {doc_type}**",
         f"---",
-        f"🏦 **VAULT UPDATES (Persisting to main JSON)**:",
-        *(commit_log if commit_log else ["No critical decision features captured from this file."])
+        f"🔍 **EXTRACTION ENGINE**",
+        f"Technology: `{'Gemini Native' if is_gemini and ext == '.pdf' else 'RAG + LlamaParse'}`",
+        f"Status: ✅ Successfully Indexed in Pinecone",
+        "",
+        f"📊 **ML DATASET (IDENTIFIED METRICS)**",
+        *(commit_log if commit_log else ["_No critical ML features detected in this document._"]),
+        "",
+        f"🧠 **CREDIT QUALITY (THE 5Cs)**",
+        f"• **Character**: {cs_data.get('Character', 'Not mentioned')}",
+        f"• **Capacity**: {cs_data.get('Capacity', 'Not mentioned')}",
+        f"• **Capital**: {cs_data.get('Capital', 'Not mentioned')}",
+        f"• **Collateral**: {cs_data.get('Collateral', 'Not mentioned')}",
+        "",
+        f"⚠️ **RISK EVALUATION**",
+        f"{str(risks)[:500] if risks else 'No immediate financial risks or adverse flags detected.'}",
+        "",
+        f"🏦 **VAULT SYNCHRONIZATION**",
+        f"Main database has been updated with {len(commit_log)} key parameters from this appraisal."
     ]
     user_reply = _step_review(1, f"Individual Document Analysis", preview)
     
@@ -570,18 +709,27 @@ def crawl_web_for_litigation(company_name: str) -> str:
             pass  # If interrupt fails, continue with provided name
 
     # ── Initialize data structures ──
-    processed_data = []
-    agg_litigation = 0
-    agg_sentiment = 0.0
-    positive_count = 0
-    negative_count = 0
-    details_nclt = []
-    details_rbi = []
-    final_headlines = []
-    snippets = []
-    warnings_log = []  # Log warnings instead of displaying
+    processed_data: List[Dict] = []
+    agg_litigation: int = 0
+    agg_sentiment: float = 0.0
+    positive_count: int = 0
+    negative_count: int = 0
+    details_nclt: List[str] = []
+    details_rbi: List[str] = []
+    final_headlines: List[str] = []
+    snippets: List[Dict] = []
+    warnings_log: List[str] = []  # Log warnings instead of displaying
 
-    # ── Real Web Research via Tavily (with error handling) ──
+    # ── Check Provider for Built-in Search ──
+    model_choice = st.session_state.get("selected_model", "").lower()
+    if "google" in model_choice or "openai" in model_choice:
+        return json.dumps({
+            "status": "direct_search_required",
+            "message": "As a Gemini/OpenAI model, please use your INTERNAL WEB SEARCH CAPABILITIES (e.g. google_search_retrieval) directly to find legal records and news. Do not use this tool for search.",
+            "detailed_findings": []
+        })
+
+    # ── Real Web Research via Tavily (for OSS/Groq) ──
     try:
         if not TAVILY_API_KEY or TAVILY_API_KEY.lower() in ["", "none", "false", "disabled"]:
             warnings_log.append("Tavily API key not configured. Using mock data.")
@@ -632,12 +780,13 @@ def crawl_web_for_litigation(company_name: str) -> str:
             
             # Deduplicate by URL
             seen_urls = set()
-            unique_snippets = []
+            unique_shards: List[Dict] = []
             for s in snippets:
-                if s.get('url') not in seen_urls:
-                    unique_snippets.append(s)
-                    seen_urls.add(s.get('url'))
-            snippets = unique_snippets[:10]  # Cap at 10 results
+                curr_url = s.get('url')
+                if curr_url and curr_url not in seen_urls:
+                    unique_shards.append(s)
+                    seen_urls.add(curr_url)
+            snippets = unique_shards[:10]  # Cap at 10 results
 
     except Exception as api_err:
         warnings_log.append(f"Web API error: {str(api_err)[:100]}")
@@ -713,15 +862,25 @@ RESPOND WITH ONLY VALID JSON (no markdown):
                 }
                 
                 # Count metrics
-                if data["is_positive"]: positive_count += 1
-                if data["is_negative"]: negative_count += 1
-                if data["litigation_found"]: agg_litigation += 1
+                if data.get("is_positive"): positive_count = int(positive_count) + 1
+                if data.get("is_negative"): negative_count = int(negative_count) + 1
+                if data.get("litigation_found"): agg_litigation = int(agg_litigation) + 1
                 
-                agg_sentiment += data["sentiment_score"]
+                agg_sentiment = float(agg_sentiment) + float(data.get("sentiment_score", 0.0))
+                
+                # ── STORE IN PINECONE CLOUD ──
+                mgr = get_document_manager()
+                mgr.db.add_web_result(
+                    result_id=f"web_{uuid.uuid4().hex[:8]}",
+                    company=company_name,
+                    content=content,
+                    metadata=data
+                )
                 
                 if data.get("risk_summary") and data["risk_summary"] != "N/A":
-                    if data["is_nclt"]: details_nclt.append(data["risk_summary"])
-                    if data["is_rbi_penalty"]: details_rbi.append(data["risk_summary"])
+                    r_sum = str(data["risk_summary"])
+                    if data.get("is_nclt"): details_nclt.append(r_sum)
+                    if data.get("is_rbi_penalty"): details_rbi.append(r_sum)
                 
                 snippet_info = {
                     "headline": title,
@@ -766,6 +925,7 @@ RESPOND WITH ONLY VALID JSON (no markdown):
     rbi_actions = list(set(details_rbi))[:5]
     
     # ── Prepare final result (pure data, no UI calls) ──
+    import pandas as pd
     result = {
         "status": "success" if processed_data else "partial_success",
         "company_searched": company_name,
@@ -999,7 +1159,7 @@ def extract_numerical_features(
         raw_text = st.session_state.get("document_extracted_text", "")
         if not raw_text.strip():
             thread_id = st.session_state.get("thread_id")
-            bridge_path = os.path.join("temp_storage", f"{thread_id}.txt")
+            bridge_path = os.path.join("temp", f"{thread_id}.txt")
             if os.path.exists(bridge_path):
                 with open(bridge_path, "r") as f:
                     raw_text = f.read()
@@ -1228,24 +1388,16 @@ def extract_numerical_features(
 # Tool 4 — Run XGBoost Scorer
 # ──────────────────────────────────────────────
 @tool
-def run_xgboost_scorer(features_json: str, base_premium: float = 8.5) -> str:
+def run_xgboost_scorer(features_json: str, base_premium: float = 8.5, revenue_tolerance: float = 25.0, litigation_threshold: int = 3) -> str:
     """Run the pre-trained XGBoost credit scoring model on the extracted features.
     
-    Takes the 6 numerical features and produces a credit decision:
-    Loan_Approved (0/1), Approved_Limit_Cr, and Interest_Rate_Pct.
-    
-    The interest rate is calculated dynamically using:
-    Interest Rate = Base Premium + Risk Premium + Age Premium
-    where Risk Premium = ((900 - CIBIL) / 100) * 0.5
-    and Age Premium = 1.5% if Company Age <= 5 years, else 0%
+    Takes the 6 numerical features and produces a credit decision.
     
     Args:
-        features_json: JSON string containing the 6 features:
-            Company_Age, CIBIL_Commercial_Score, GSTR_Declared_Revenue_Cr,
-            Bank_Statement_Inflow_Cr, Litigation_Count, News_Sentiment_Score
-        base_premium: The base interest rate premium set by the credit manager
-            on the dashboard (default: 8.5%). This is the starting rate before
-            risk and age adjustments.
+        features_json: JSON string containing the 6 features.
+        base_premium: The base interest rate premium set by the credit manager (default: 8.5%).
+        revenue_tolerance: Maximum variance (%) between GST and Bank Inflow before rejection (default: 25.0%).
+        litigation_threshold: Maximum allowed litigation cases before rejection (default: 3).
     
     Returns:
         JSON with the ML model's credit decision including dynamic interest rate.
@@ -1288,17 +1440,50 @@ def run_xgboost_scorer(features_json: str, base_premium: float = 8.5) -> str:
                 "provided_features": list(features.keys()) if isinstance(features, dict) else []
             })
 
+    # ── VERIFICATION STEP 1: Circular Trading Detection ──
+    gstr_rev = float(features.get("GSTR_Declared_Revenue_Cr", 0))
+    bank_inf = float(features.get("Bank_Statement_Inflow_Cr", 0))
+    decimal_tolerance = revenue_tolerance / 100.0
+    
+    if gstr_rev > 0:
+        variance = abs(gstr_rev - bank_inf) / gstr_rev
+        if variance > decimal_tolerance:
+            return json.dumps({
+                "status": "rejected_pre_ml",
+                "message": f"❌ CIRCULAR TRADING DETECTED: GST Revenue (₹{gstr_rev} Cr) and Bank Inflow (₹{bank_inf} Cr) variance is {variance*100:.1f}%. Exceeds tolerance ({revenue_tolerance}%).",
+                "rejection_reason": "Circular Trading / Revenue Inflation Suspected",
+                "prediction": {
+                    "Loan_Approved": 0, "Approval_Probability": 0.0, "Rejection_Probability": 1.0,
+                    "Note": f"Hard rejection: Revenue Variance ({variance*100:.1f}%) > Threshold ({revenue_tolerance}%)."
+                }
+            }, indent=2)
+
+    # ── VERIFICATION STEP 2: Legal Risk Check ──
+    lit_count = int(features.get("Litigation_Count", 0))
+    if lit_count > litigation_threshold:
+        return json.dumps({
+            "status": "rejected_pre_ml",
+            "message": f"❌ EXCESSIVE LEGAL RISK: {lit_count} active litigation cases detected. Max allowed is {litigation_threshold}.",
+            "rejection_reason": "High Legal Exposure / Excessive Active Litigation",
+            "prediction": {
+                "Loan_Approved": 0, "Approval_Probability": 0.0, "Rejection_Probability": 1.0,
+                "Note": f"Hard rejection: Litigation Count ({lit_count}) > Threshold ({litigation_threshold})."
+            }
+        }, indent=2)
+
     try:
+        import xgboost as xgb
         model = xgb.XGBClassifier()
         # Load the model
-        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model", "model.json")
+        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ml_model", "model.json")
         model.load_model(model_path)
 
         # row construction
         row = {col: float(features[col]) for col in required_cols}
+        import pandas as pd
         df = pd.DataFrame([row])
         prediction = int(model.predict(df)[0])
-        probabilities = model.predict_proba(df)[0].tolist()
+        probabilities = model.predict_proba(df)[0]
 
         if prediction == 1:
             # Dynamic limit: scale by CIBIL quality
@@ -1317,6 +1502,42 @@ def run_xgboost_scorer(features_json: str, base_premium: float = 8.5) -> str:
             limit, rate = 0.0, 0.0
             risk_premium, age_premium = 0.0, 0.0
 
+        # ── SHAP Explainability ──
+        shap_explanation = []
+        try:
+            import shap
+            # Create explainer - XGBClassifier is a tree model
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(df)
+            
+            # For binary classification, shap_values can be a list (one per class) or a single array
+            # We want the values for class 1 (Approval)
+            if isinstance(shap_values, list):
+                s_vals = shap_values[1][0]
+            else:
+                s_vals = shap_values[0]
+                
+            # Create a list of (feature, value, shap_contribution)
+            contributions = []
+            for i, col in enumerate(required_cols):
+                contributions.append({
+                    "feature": col,
+                    "value": row[col],
+                    "contribution": float(s_vals[i])
+                })
+            
+            # Sort by absolute contribution to find the most impactful features
+            contributions.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+            
+            for c in contributions[:3]: # Top 3 contributors
+                direction = "Positively impacted" if c["contribution"] > 0 else "Negatively impacted"
+                impact = "Approval" if prediction == 1 else "Rejection"
+                shap_explanation.append(
+                    f"**{c['feature']}**: {direction} the {impact} decision with a value of {c['value']}."
+                )
+        except Exception as se:
+            shap_explanation = [f"SHAP Analysis Error: {str(se)}"]
+
         result = {
             "status": "success",
             "input_features": features,
@@ -1325,7 +1546,8 @@ def run_xgboost_scorer(features_json: str, base_premium: float = 8.5) -> str:
                 "Approved_Limit_Cr": limit,
                 "Interest_Rate_Pct": rate,
                 "Approval_Probability": round(float(probabilities[1]), 4),
-                "Rejection_Probability": round(float(probabilities[0]), 4)
+                "Rejection_Probability": round(float(probabilities[0]), 4),
+                "shap_explanation": shap_explanation
             },
             "rate_breakdown": {
                 "Base_Premium": base_premium,
@@ -1333,7 +1555,7 @@ def run_xgboost_scorer(features_json: str, base_premium: float = 8.5) -> str:
                 "Age_Premium": age_premium,
                 "Final_Rate": rate
             },
-            "model_info": "XGBoost Classifier (pre-trained on 5000 synthetic corporate credit records, 97% accuracy)"
+            "model_info": "XGBoost Classifier with SHAP Explainability (97% accuracy)"
         }
     except Exception as e:
         # Fallback prediction if model loading fails
@@ -1378,7 +1600,7 @@ def run_xgboost_scorer(features_json: str, base_premium: float = 8.5) -> str:
         f"Approved Limit: ₹{pred.get('Approved_Limit_Cr', 0)} Cr",
         f"Interest Rate: {pred.get('Interest_Rate_Pct', 0)}%",
         f"Approval Probability: {pred.get('Approval_Probability', 'N/A')}",
-        f"Rate: Base {rb.get('Base_Premium', 0)}% + Risk {rb.get('Risk_Premium_CIBIL', 0)}% + Age {rb.get('Age_Premium', 0)}%",
+        f"Key Drivers: {', '.join([s.split('**')[1] for s in pred.get('shap_explanation', [])[:2]])}",
     ]
     user_reply = _step_review(5, "XGBoost Credit Scoring", sr_preview)
     if user_reply.lower() not in CONTINUE_COMMANDS:
@@ -1484,11 +1706,10 @@ def generate_cam_report(
 ) -> str:
     """Generate the final Credit Appraisal Memorandum (CAM) report.
     
-    INTERACTIVE VERSION: 
-    1. Asks user confirmation before generating CAM
-    2. Applies 3 rejection rules
-    3. Includes all document summaries and 5 Cs framework
-    4. Shows detailed rejection reasons if applicable
+    PURE TOOL VERSION (NO UI):
+    1. Applies 3 rejection rules on top of the ML decision
+    2. Uses a LangGraph interrupt to ask the human for final confirmation before generating the CAM
+    3. Combines all document summaries, web research, features, and decisions into a Five Cs CAM report
     
     This is the LAST tool to call. It combines all gathered intelligence —
     document data, web research, ML features, model decision, and officer insights —
@@ -1508,51 +1729,62 @@ def generate_cam_report(
         feat_data = json.loads(features_json) if isinstance(features_json, str) else features_json
         features = feat_data.get("features", feat_data) if isinstance(feat_data, dict) else feat_data
     except (json.JSONDecodeError, TypeError):
-        pass
+        features = features or {}
 
     # Parse web data
     web_data = {}
     try:
         web_data = json.loads(web_research) if isinstance(web_research, str) else web_research
     except (json.JSONDecodeError, TypeError):
-        pass
+        web_data = web_data or {}
 
-    # STEP 2: Apply Rejection Rules
-    st.info("📋 **Applying Rejection Rules Analysis**")
+    # STEP 2: Apply Rejection Rules (no UI here)
     rules_result = apply_rejection_rules(features, ml_decision)
     final_loan_approved = rules_result["loan_approved"]
     rejection_reason = rules_result["rejection_reason"]
     rules_applied = rules_result["rules_applied"]
-    
-    # Display rules check
-    with st.expander("📊 Rejection Rules Analysis", expanded=True):
-        for rule in rules_applied:
-            if "✅" in rule:
-                st.success(rule)
-            else:
-                st.error(rule)
-        
-        if rejection_reason:
-            st.warning(f"⚠️ **REJECTION TRIGGERED**:\n\n{rejection_reason}")
-    
-    # STEP 3: Confirmation before generating CAM
-    st.warning("⚠️ **Confirmation Required**")
-    st.write(f"**Decision**: {'✅ APPROVED' if final_loan_approved == 1 else '❌ REJECTED'}")
-    st.write(f"**Reason**: {rejection_reason if rejection_reason else 'Passes all rejection rules'}")
-    
-    user_confirmation = st.radio(
-        "Should I proceed with generating the CAM Report?",
-        options=["Yes, Generate CAM Report", "No, Cancel"],
-        index=0
-    )
-    
-    if user_confirmation == "No, Cancel":
-        st.info("❌ CAM Report generation cancelled.")
+
+    # STEP 3: Confirmation before generating CAM (HITL interrupt)
+    decision_label = "APPROVED" if final_loan_approved == 1 else "REJECTED"
+    limit_preview = ml_decision.get("Approved_Limit_Cr", 0) if final_loan_approved == 1 else 0
+    rate_preview = ml_decision.get("Interest_Rate_Pct", 0) if final_loan_approved == 1 else 0
+
+    confirmation = interrupt({
+        "type": "cam_confirmation",
+        "decision": decision_label,
+        "limit_preview_cr": limit_preview,
+        "rate_preview_pct": rate_preview,
+        "rejection_reason": rejection_reason,
+        "rules_applied": rules_applied,
+        "question": (
+            f"📋 **Final Decision Summary for {company_name}**\n\n"
+            f"- Decision: **{decision_label}**\n"
+            f"- Approved Limit (Cr): **{limit_preview}**\n"
+            f"- Interest Rate (%): **{rate_preview}**\n"
+            f"- Rejection Reason (if any): {rejection_reason or 'None — passes all hard rules'}\n\n"
+            f"Type `yes` to generate the full CAM report now, or `no` to cancel CAM generation.\n"
+            f"You may also add a short note that will be included in the CAM header."
+        ),
+    })
+
+    confirmation_str = str(confirmation).strip().lower()
+    if confirmation_str.startswith("no"):
         return json.dumps({
             "status": "cancelled",
-            "message": "User chose not to generate CAM Report"
+            "message": "User chose not to generate CAM Report",
+            "decision": decision_label,
         })
-    
+
+    # Allow the user to add an optional note (anything after yes/no)
+    custom_note = ""
+    if confirmation_str.startswith("yes"):
+        tail = confirmation_str[3:].strip()
+        if tail:
+            custom_note = tail
+    else:
+        # If user didn't clearly say yes/no but responded, treat it as consent and capture as note
+        custom_note = str(confirmation).strip()
+
     # STEP 4: Parse document findings from RAG
     doc_summaries = ""
     try:
@@ -1579,6 +1811,11 @@ def generate_cam_report(
     rate = ml_decision.get("Interest_Rate_Pct", 0) if final_loan_approved == 1 else 0
     approval_prob = ml_decision.get("Approval_Probability", "N/A")
 
+    import pandas as pd
+    header_note_block = ""
+    if custom_note:
+        header_note_block = f"\n> **Officer Note:** {custom_note}\n\n"
+
     cam_report = f"""
 # 📋 CREDIT APPRAISAL MEMORANDUM (CAM)
 ## {company_name}
@@ -1595,6 +1832,8 @@ def generate_cam_report(
 | **Date** | {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S IST')} |
 
 ---
+
+{header_note_block}
 
 ## 🚨 REJECTION RULES ANALYSIS
 
@@ -1690,6 +1929,11 @@ def generate_cam_report(
 | **Approval Probability** | {approval_prob} |
 | **Rejection Probability** | {ml_decision.get('Rejection_Probability', 'N/A')} |
 
+#### 🔍 **SHAP EXPLAINABILITY ANALYSIS**
+(Why the AI made this specific prediction)
+
+{chr(10).join([f"- {exp}" for exp in ml_decision.get('shap_explanation', ['*SHAP analysis unavailable for this prediction*'])])}
+
 **Model Rate Calculation**:
 - Base Premium: {ml_decision.get('Base_Premium', 8.5)}%
 - Risk Premium (CIBIL): +{ml_decision.get('Risk_Premium_CIBIL', 0)}%
@@ -1722,13 +1966,17 @@ Based on comprehensive analysis across all five credit parameters, combined with
 
 **Key Risk Factors Summary**:
 {chr(10).join([f"- {line}" for line in [r for r in rules_applied if 'RULE' in r or 'CONDITION' in r or '🔴' in r] or ['None identified - all parameters within acceptable ranges'][:1]])}
+    """
 
+    import pandas as pd
+    footer = f"""
 ---
 
 *This report was generated by CREDI-MITRA AI Credit Underwriting System*  
 *Timestamp: {pd.Timestamp.now().isoformat()}*  
 *Status: Final | Review Required Before Sanctioning*
-"""
+    """
+    cam_report += footer
 
     # STEP 6: Save CAM Report  
     save_dir = st.session_state.get("current_upload_dir") or RELIABLE_UPLOAD_DIR
@@ -1737,11 +1985,7 @@ Based on comprehensive analysis across all five credit parameters, combined with
         os.makedirs(analysis_dir, exist_ok=True)
         with open(os.path.join(analysis_dir, "CAM_Report.md"), "w") as f:
             f.write(cam_report)
-        st.success(f"✅ CAM Report saved to {analysis_dir}/CAM_Report.md")
 
-    # Display the report
-    st.markdown(cam_report)
-    
     return cam_report.strip()
 
 
@@ -1749,60 +1993,78 @@ Based on comprehensive analysis across all five credit parameters, combined with
 # Build the ReAct Agent Graph
 # ──────────────────────────────────────────────
 ORCHESTRATOR_SYSTEM_PROMPT = """# ROLE AND MANDATE
-You are CREDI-MITRA, an Institutional-Grade AI Credit Underwriter and Lead Orchestrator. Your mandate is to conduct rigorous, error-free credit appraisals by sequentially deploying specialized analytical tools, identifying material risk indicators, and synthesizing a comprehensive Credit Appraisal Memorandum (CAM).
-You operate within a strict "Reason -> Execute -> Report -> Validate" framework. Your tone is highly professional, objective, analytical, and transparent. You act as a collaborative co-pilot to the human Senior Credit Officer.
----
-# PHASE 0: INITIALIZATION & CONTEXT VERIFICATION (STRICT GATEKEEPER)
-Before initiating any underwiting protocols, you must verify the presence of mandatory inputs. You must check BOTH the user message and the verified context block for these values.
+You are CREDI-MITRA, a Unified Institutional-Grade AI Credit Underwriter. Your mandate is to conduct rigorous, error-free credit appraisals by utilizing a single, powerful AI model to both reason across the workflow and perform deep analytical dives into documents stored in your **Pinecone Cloud Vector Store**.
 
-1. **Application No.** (Verified ID in context or mentioned by human) - **MANDATORY**
-2. **Document Text Available** (Must be "Yes" in the context block) - **MANDATORY**
-3. **Company Name** (Optional to start, but must be found/recovered during analysis)
+# OBJECTIVE: SEQUENTIAL, PHASED DOCUMENT INVESTIGATION
+You MUST analyze the uploaded documents **one by one** in the specified hierarchy and obey explicit PHASE triggers coming from the user or UI buttons.
 
-🛑 IF INCOMPLETE (Missing App No or Doc Text): You are strictly prohibited from executing tools. Reply EXACTLY with:
-"⚠️ **Underwriting Protocol Halted:** To initiate the appraisal process, please provide the following mandatory inputs via the sidebar and click **Submit to Agent**:\n\n[List missing mandatory parameters: App No and/or Docs]\n\nI await your confirmation to proceed."
+When you see:
+- "Begin Phase 1" or "Start Phase 1": you are in the **Per-document RAG analysis** phase.
+- "Proceed to Phase 2" or "Start web research": you are in the **Web research & seriousness scoring** phase.
+- "Proceed to Phase 3" or "Extract numerical features": you are in the **Numerical feature extraction** phase.
+- "Proceed to Phase 4" or "Run ML scoring": you are in the **ML scoring + rules** phase.
+- "Proceed to Phase 5" or "Generate CAM": you are in the **CAM generation** phase.
 
-🟢 IF COMPLETE: Formally acknowledge receipt of the documents, provide a brief inventory of the received files, and state: 
-"Context verified. Shall I commence the formal credit appraisal utilizing the CrediMitra diagnostic tools?"
-**DO NOT proceed until the human officer explicitly grants authorization.**
----
-# PHASE 1: MANDATORY HIERARCHICAL ANALYSIS (STRICT ORDER)
-*Protocol: You MUST process documents in the following categorical order. Never skip or re-order:*
-1. **Application Form** (Foundational data)
-2. **CIBIL Score Report** (Credit history)
-3. **GST Returns** (Revenue verification)
-4. **Bank Statements** (Cash flow analysis)
-5. **Annual Reports** (Financial health)
-6. **Officer Insights** (Manual validation)
+During Phase 1, for EACH document, your goal is to:
+1. **Extract Numerical Features**: Identify specific financial values (Revenue, PAT, Inflow, CIBIL) for the XGBoost ML model.
+2. **Harvest Qualitative Insights**: Capture "High-Value Insights" across the **5Cs (Character, Capacity, Capital, Collateral, Conditions)** for the Credit Appraisal Memorandum (CAM).
+3. **Report Immediately**: Present a clear summary of **ML Features** and **5Cs Insights** for that specific document before moving to the next one.
 
-**The Recursive Analysis Loop (FOR EACH FILE):**
-1. **Identify**: Call `list_uploaded_documents` to get the sorted inventory.
-2. **Propose**: State: "Protocol ready for **[Next Filename]** ([Category]). Shall I commence the deep-dive analysis?"
-3. **Execute**: ONLY after authorization, call `analyze_document` for that exact filename.
-   - *Note:* This will trigger a "Step 1 Review" in the chat showing finding summaries.
-4. **Confirm**: Once results are reviewed, conclude by saying: "**[Filename]** analysis is complete and persisted to the main records. Shall I move to the next document in the hierarchy?"
-5. **Close Phase**: Only when ALL files from the inventory are processed, call `extract_document_data` (Step 2) to aggregate the final data model.
+🛑 IF INCOMPLETE: Halt and ask for missing inputs via the sidebar.
+
+🟢 IF COMPLETE: State exactly:
+"**Unified Context Verified.**
+Proceeding with Phase 1 Appraisal : **{Company Name}** for Application No: **{No}**
+Shall I begin the investigation if detail are correct?"
+
 ---
-# PHASE 2: EXTERNAL RISK & DUE DILIGENCE
-4. `crawl_web_for_litigation`: Search the web for NCLT filings, sector-specific headwinds, and corporate news using the company name.
-   - *Action:* If material risks (e.g., insolvency, lawsuits) are identified, flag them as "High-Severity Risk Indicators" to the human officer before proceeding.
+# PHASE 1: SEQUENTIAL ANALYSIS & RAG RETRIEVAL (PINECONE)
+1. **Verification Step**: Your FIRST action after user confirmation MUST be calling `list_uploaded_documents`. You must cross-reference the received files against the 5 mandatory categories:
+   - Application Form
+   - CIBIL Score Report
+   - GST Returns
+   - Bank Statements
+   - Annual Reports
+   IF a category is missing, notify the user immediately and give him option
+        1) If want to proceed with these documents only type continue
+        2) If not submit application again and start AI Chat.
+
+2. **Sequential Processing**: You MUST process documents in the following categorical order by performing targeted retrieval from **Pinecone Cloud**:
+1. **Application Form** -> 2. **CIBIL** -> 3. **GST Returns** -> 4. **Bank Statements** -> 5. **Annual Reports**
+
+- **Direct Extraction**: Call `analyze_document` for a full overview of a specific file.
+- **Targeted RAG Search**: Use `search_company_documents` to find specific missing values (e.g., "What is the PAT for 2024?") if the general analysis is insufficient. This ensures high-precision retrieval of numerical data.
+- **Reporting**: After EACH retrieval step, summarize the "Valuable Insights Found" and "Data Points for ML" based specifically on what was retrieved from Pinecone.
+- **Phase Closing**: After all documents are analyzed with `analyze_document`, call `extract_document_data` exactly once to finalize the intelligence aggregation.
 ---
-# PHASE 3: FEATURE ENGINEERING & PREDICTIVE SCORING
-5. `extract_numerical_features`: Transform the aggregated text and web research into a strictly formatted JSON structure for the ML model.
-   - *Inputs:* Pass `document_summary` (from Tool 3), `web_research` (from Tool 4), and `company_name`.
-6. `run_xgboost_scorer`: Execute the predictive Machine Learning engine to calculate the binary credit decision, recommended limit, and risk-adjusted interest rate.
-   - *Inputs:* Pass the `features_json` (from Tool 5).
+# PHASE 2: EXTERNAL RISK & SEMANTIC MEMORY (TRIGGERED BY USER)
+Only start this phase when the user explicitly asks to start web research (e.g. "Proceed to Phase 2" or "Start web research").
+- `crawl_web_for_litigation`: Cross-reference Pinecone data with external NCLT and news findings, and compute seriousness-aware metrics (litigation_count, positive_news_count, negative_news_count, news_sentiment_score, risk_score).
+- **Long-Term Memory Search**: Use `search_analyzed_web_findings` to retrieve and verify previously stored research snippets from Pinecone to ensure consistency in risk assessment.
+---
+# PHASE 3: FEATURE ENGINEERING (TRIGGERED BY USER)
+Only start this phase when the user explicitly asks you to extract numerical features (e.g. "Proceed to Phase 3" or "Extract numerical features").
+- `extract_numerical_features`: Synthesize all findings into the final ML JSON.
+---
+# PHASE 4: FEATURE SCORING (TRIGGERED BY USER)
+Only start this phase when the user explicitly asks you to run the ML model (e.g. "Proceed to Phase 4" or "Run ML scoring").
+- `run_xgboost_scorer`: Generate the final credit decision and display the results clearly.
+---
+# PHASE 5: CAM GENERATION (TRIGGERED BY USER)
+Only start this phase when the user explicitly asks you to generate the CAM (e.g. "Proceed to Phase 5" or "Generate CAM").
+- `generate_cam_report`: Draft the final memorandum using the insights collected during Phases 1–4.
+# HUMAN-IN-THE-LOOP & MANUAL OVERRIDES (USER EMPOWERMENT)
+You are a collaborative co-pilot. The Human Officer has ultimate authority:
+1. **Manual Feature Modification**: If the user provides a direct value in the chat (e.g., "The Revenue is 50 Cr" or "Set CIBIL to 720"), you MUST use the `set_numerical_feature` tool to persist this change. Acknowledge the change and update your internal feature model for the CAM and ML.
+2. **Instant Rejection Protocol**: If the user explicitly says "Reject this application", "Decline", or "Halt and Reject", you MUST immediately stop all further analysis. Call the final summarization tools to document the reason for rejection and close the file.
+3. **Correction & Guidance**: If the user corrects your interpretation of a document, apologize, use `set_numerical_feature` if a number was changed, and re-analyze if necessary.
+4. **Always Report Status**: After calling `set_numerical_feature` or any other persistence tool, you MUST emit a final text response to the user summarizing what was updated and asking for the next action. Never finish a turn with only a tool call.
+
+---
 # TOOL EXECUTION PROTOCOL (MANDATORY)
-1. **Sequential Execution Only**: You MUST call tools one at a time. Do not provide a list of multiple tool calls in a single response. 
-2. **Review Dependency**: Each analytical tool (except `list_uploaded_documents`) generates a Human-in-the-Loop review. You MUST wait for the tool output and any user feedback before deciding on the next tool.
-3. **Workflow Order**:
-   - `list_uploaded_documents`: Mandatory first step to see what files exist.
-   - `analyze_document`: Call this for EACH file to extract high-fidelity markdown via LlamaParse.
-   - `extract_document_data`: Call this ONCE after all files are analyzed to summarize the total intelligence gathered and extract cross-document metrics.
-   - `crawl_web_for_litigation`: Research legal and news health.
-   - `extract_numerical_features`: Synthesize final ML inputs.
-   - `run_xgboost_scorer`: Generate the credit score.
-   - `generate_cam_report`: Final drafting.
+1. **One-By-One Logic**: You are strictly prohibited from processing multiple files in one step.
+2. **Sequential Reporting**: Show every analysis step clearly. Never skip the interpretation of numeric data.
+3. **Workflow Order**: `list_uploaded_documents` -> `analyze_document` (xN) -> `extract_document_data` -> (on user request) `crawl_web_for_litigation` -> `set_numerical_feature` (as needed) -> (on user request) `extract_numerical_features` -> (on user request) `run_xgboost_scorer` -> (on user request) `generate_cam_report`.
 ---
 # EXCEPTION HANDLING & FAULT TOLERANCE (CRITICAL PROTOCOLS)
 You are designed to be error-resilient. You must never invent, hallucinate, or assume missing data.
@@ -1820,6 +2082,7 @@ You are designed to be error-resilient. You must never invent, hallucinate, or a
 """
 
 ALL_TOOLS = [
+    set_numerical_feature,
     list_uploaded_documents,
     analyze_document,
     extract_document_data,
@@ -1832,54 +2095,58 @@ ALL_TOOLS = [
 ]
 
 
-def build_agent(model_choice: str = "llama-3.1-8b-instant (Groq)"):
-    """Build and return the LangGraph ReAct agent with Groq or Google LLM.
-    
-    For Gemini, tries a chain of models in order to handle free-tier quota blocks.
-    For Groq, uses the selected model with auto-retry.
+def build_agent(model_choice: str):
+    """Build and return the LangGraph ReAct agent with the SPECIFICALLY chosen LLM.
+    No hidden fallbacks or default models allowed.
     """
-    if "gemini" in model_choice.lower():
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        gemini_api_key = os.environ.get("gemini_api_key", "")
-        
-        # If user selected a specific Gemini model
-        if "gemini-2.5-flash" in model_choice.lower():
-            target_models = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
-        elif "gemini-1.5-pro" in model_choice.lower():
-            target_models = ["gemini-1.5-pro", "gemini-2.5-flash"]
-        else:
-            target_models = ["gemini-2.0-flash-lite", "gemini-2.5-flash"]
-        
-        llm = None
-        last_error = None
-        for model_name in target_models:
-            try:
-                candidate = ChatGoogleGenerativeAI(
-                    model=model_name,
-                    temperature=0,
-                    api_key=gemini_api_key,
-                    max_retries=2,
-                )
-                candidate.invoke("ping")
-                llm = candidate
-                print(f"[CREDI-MITRA] Gemini model selected: {model_name}")
-                break
-            except Exception as e:
-                last_error = e
-                print(f"[CREDI-MITRA] Gemini model '{model_name}' failed: {e}")
-                continue
-        
-        if llm is None:
-            raise RuntimeError(f"All Gemini models exhausted. Last error: {last_error}")
+    if not model_choice:
+        raise ValueError("No model choice provided to build_agent.")
+
+    # ── Resolve Provider ──
+    model_choice_str = str(model_choice).lower()
+    clean_model = str(model_choice).split(" (")[0].strip()
+    
+    if "(google)" in model_choice_str: provider = "google"
+    elif "(openai)" in model_choice_str: provider = "openai"
+    elif "(groq)" in model_choice_str: provider = "groq"
     else:
-        # Resolve which Groq model to use dynamically
-        # Format from UI: "groq/compound (Groq)" -> take index 0
-        actual_model = model_choice.split(" (Groq)")[0].strip()
-        if not actual_model or actual_model == "default":
-            actual_model = GROQ_MODEL
+        # Fallback keyword detection
+        if "gemini" in model_choice_str or "google" in model_choice_str: provider = "google"
+        elif "gpt" in model_choice_str or "openai" in model_choice_str: provider = "openai"
+        else: provider = "groq"
+
+    # ── Initialize Model ──
+    if provider == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        gemini_api_key = os.environ.get("gemini_api_key", "") or os.environ.get("GOOGLE_API_KEY", "")
         
+        # Mapping for generic/short names to actual API IDs
+        model_mapping = {
+            "Gemini 3": "gemini-3",
+            "Gemini 2.5 Pro": "gemini-2.5-pro",
+            "Gemini 2.5 Flash": "gemini-2.5-flash",
+            "Gemini 2.5 Flash-Lite": "gemini-2.5-flash-lite",
+        }
+        target_model = model_mapping.get(clean_model, clean_model)
+        
+        llm = ChatGoogleGenerativeAI(
+            model=target_model,
+            temperature=0,
+            api_key=gemini_api_key,
+            max_retries=2,
+        )
+    elif provider == "openai":
+        openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        llm = ChatOpenAI(
+            model=clean_model,
+            api_key=openai_api_key,
+            temperature=0,
+            max_retries=3,
+        )
+    else:
+        # Groq selection (strictly using the chosen model)
         llm = ChatGroq(
-            model=actual_model,
+            model=clean_model,
             api_key=GROQ_API_KEY,
             temperature=0,
             max_retries=3,
