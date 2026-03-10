@@ -1989,6 +1989,37 @@ Based on comprehensive analysis across all five credit parameters, combined with
     return cam_report.strip()
 
 
+@tool
+def clear_application_session(confirm: bool = False) -> str:
+    """Completely wipe all temporary analysis data, vector embeddings, and uploaded files for current application.
+    
+    Call this ONLY when the user explicitly confirms they want to 'end chat' or 'clear data' after the analysis is complete.
+    
+    Args:
+        confirm: Must be True to proceed with deletion.
+    """
+    if not confirm:
+        return "Cleanup cancelled. Data remains intact."
+        
+    try:
+        # 1. Clear Vector DB
+        from rag import get_document_manager
+        mgr = get_document_manager()
+        mgr.reset_session()
+        
+        # 2. Clear local files if possible
+        save_dir = st.session_state.get("current_upload_dir") or RELIABLE_UPLOAD_DIR
+        if save_dir and os.path.exists(save_dir) and "applications_received" in save_dir:
+            import shutil
+            # We don't delete the whole applications_received, just the subfolder
+            # But safety first: only delete if it matches the current app pattern
+            shutil.rmtree(save_dir, ignore_errors=True)
+            
+        return "SESSION_CLEARED_SUCCESSFULLY: All temporary data and vector embeddings have been wiped."
+    except Exception as e:
+        return f"Error during cleanup: {str(e)}"
+
+
 # ──────────────────────────────────────────────
 # Build the ReAct Agent Graph
 # ──────────────────────────────────────────────
@@ -2079,6 +2110,13 @@ You are designed to be error-resilient. You must never invent, hallucinate, or a
   - *Formula:* `Value in Cr = (Value in Lakhs / 100)`. 
   - *Example:* "150 lakhs" must be converted to "1.5" before processing.
 - **Sanity Checks:** If an extracted number defies logical business parameters (e.g., a mid-market manufacturing firm showing ₹0.02 Cr annual revenue), flag it as a probable OCR anomaly and request human verification.
+---
+# SESSION CLOSURE & DATA PRIVACY (MANDATORY)
+After you have successfully generated and presented the CAM report (Phase 5), you MUST ask the user:
+"The analysis for **{Company Name}** is now complete. For security and privacy, would you like to **end this session and clear all temporary data** from the database?"
+
+If the user says "yes", "clear", "end", or confirms, you MUST call `clear_application_session(confirm=True)`.
+Once that tool returns success, inform the user that the system is now clean and ready for a new application.
 """
 
 ALL_TOOLS = [
@@ -2090,6 +2128,7 @@ ALL_TOOLS = [
     extract_numerical_features,
     run_xgboost_scorer,
     generate_cam_report,
+    clear_application_session,
     # RAG Tools for document retrieval
     *get_rag_tools(),
 ]

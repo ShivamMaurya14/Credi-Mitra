@@ -673,6 +673,13 @@ def run_agent(user_input=None, resume_value=None):
                         if tool_name == "generate_cam_report":
                             st.session_state.cam_content = tool_content
                             st.session_state.cam_generated = True
+                        
+                        # Handle automatic session reset if cleanup tool succeeded
+                        if tool_name == "clear_application_session" and "SESSION_CLEARED_SUCCESSFULLY" in tool_content:
+                            st.success("🔒 Session data wiped. Returning to dashboard...")
+                            time.sleep(2)
+                            reset_application_state()
+                            switch_page("dashboard")
 
                 elif node_name == "agent":
                     # Agent's reasoning / response messages
