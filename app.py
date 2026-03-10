@@ -397,91 +397,98 @@ def _render_litigation_analysis(result_dict):
 
 
 def generate_cam_pdf(cam_text):
-    """Convert CAM markdown content into a professionally formatted PDF."""
+    """Convert CAM markdown content into a professionally formatted PDF with robust layout handling."""
     from fpdf import FPDF
     import re
     
-    # Ensure only latin-1 characters for standard fonts to avoid errors
+    # Pre-process text: normalize encoding and convert to string
     cam_text = re.sub(r'[^\x00-\xff]', '', str(cam_text))
     
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
+    
+    effective_width = pdf.w - pdf.l_margin - pdf.r_margin
 
-    # Title with styling
+    # ── Header Section ──
     pdf.set_font("Helvetica", "B", 24)
-    pdf.set_text_color(102, 126, 234) # Professional Blue
-    pdf.cell(0, 16, "CREDI-MITRA", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_text_color(102, 126, 234)
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(effective_width, 16, "CREDI-MITRA", align="C", new_x="LMARGIN", new_y="NEXT")
     
     pdf.set_font("Helvetica", "I", 11)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 8, "AI-Powered Credit Intelligence Report", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.set_x(pdf.l_margin)
+    pdf.cell(effective_width, 8, "AI-Powered Credit Intelligence Report", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(5)
     
-    # Header Line
     pdf.set_draw_color(102, 126, 234)
     pdf.set_line_width(0.7)
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
     pdf.ln(8)
 
-    # Content Parsing
+    # ── Content Loop with Safety Checks ──
     for raw_line in cam_text.strip().splitlines():
         line = raw_line.strip()
         if not line:
             pdf.ln(4)
             continue
             
-        # Headers
+        # Ensure we are always starting from the left margin for a new line block
+        pdf.set_x(pdf.l_margin)
+
+        # Headers logic
         if line.startswith("# "):
-            pdf.set_font("Helvetica", "B", 20)
+            pdf.set_font("Helvetica", "B", 18)
             pdf.set_text_color(40, 60, 120)
             text = line[2:].replace("**", "")
-            pdf.multi_cell(0, 12, text)
+            pdf.multi_cell(effective_width, 10, text)
             pdf.ln(2)
         elif line.startswith("## "):
-            pdf.set_font("Helvetica", "B", 16)
+            pdf.set_font("Helvetica", "B", 15)
             pdf.set_text_color(60, 80, 160)
             text = line[3:].replace("**", "")
-            pdf.multi_cell(0, 10, text)
+            pdf.multi_cell(effective_width, 8, text)
             pdf.ln(2)
         elif line.startswith("### "):
-            pdf.set_font("Helvetica", "B", 13)
+            pdf.set_font("Helvetica", "B", 12)
             pdf.set_text_color(60, 80, 160)
             text = line[4:].replace("**", "")
-            pdf.multi_cell(0, 8, text)
+            pdf.multi_cell(effective_width, 7, text)
             pdf.ln(1)
         
         # Horizontal Rule
         elif line == "---" or line == "***":
-            pdf.ln(3)
+            pdf.ln(2)
             pdf.set_draw_color(220, 220, 220)
             pdf.set_line_width(0.3)
             pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-            pdf.ln(5)
+            pdf.ln(4)
             
         # Lists
         elif line.startswith("- ") or line.startswith("* "):
             text = line[2:].replace("**", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
+            # Indent bullet points
             pdf.set_x(pdf.l_margin + 6)
-            pdf.multi_cell(0, 6, "• " + text)
+            pdf.multi_cell(effective_width - 6, 6, "• " + text)
             pdf.ln(1)
             
-        # Tables (Simplified)
+        # Tables (Simplified row printing)
         elif line.startswith("|"):
             if "---" in line: continue
             text = line.replace("|", "  ").replace("**", "").strip()
             pdf.set_font("Courier", "", 9)
             pdf.set_text_color(80, 80, 80)
-            pdf.multi_cell(0, 6, text)
+            pdf.multi_cell(effective_width, 5, text)
             
         # Standard Body Text
         else:
             text = line.replace("**", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
-            pdf.multi_cell(0, 6, text)
+            pdf.multi_cell(effective_width, 6, text)
             pdf.ln(1)
 
     return pdf.output()
