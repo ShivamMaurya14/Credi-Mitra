@@ -399,61 +399,92 @@ def _render_litigation_analysis(result_dict):
 def generate_cam_pdf(cam_text):
     """Convert CAM markdown content into a professionally formatted PDF."""
     from fpdf import FPDF
-    cam_text = re.sub(r'[^\x00-\xff]', '', cam_text)
+    import re
+    
+    # Ensure only latin-1 characters for standard fonts to avoid errors
+    cam_text = re.sub(r'[^\x00-\xff]', '', str(cam_text))
+    
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
-    # Title
-    pdf.set_font("Helvetica", "B", 22)
-    pdf.set_text_color(102, 126, 234)
-    pdf.cell(0, 14, "CREDI-MITRA", new_x="LMARGIN", new_y="NEXT", align="C")
-    pdf.set_font("Helvetica", "", 11)
+    # Title with styling
+    pdf.set_font("Helvetica", "B", 24)
+    pdf.set_text_color(102, 126, 234) # Professional Blue
+    pdf.cell(0, 16, "CREDI-MITRA", new_x="LMARGIN", new_y="NEXT", align="C")
+    
+    pdf.set_font("Helvetica", "I", 11)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 8, "AI-Powered Credit Intelligence", new_x="LMARGIN", new_y="NEXT", align="C")
-    pdf.ln(4)
+    pdf.cell(0, 8, "AI-Powered Credit Intelligence Report", new_x="LMARGIN", new_y="NEXT", align="C")
+    pdf.ln(5)
+    
+    # Header Line
     pdf.set_draw_color(102, 126, 234)
-    pdf.set_line_width(0.6)
+    pdf.set_line_width(0.7)
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-    pdf.ln(6)
+    pdf.ln(8)
 
+    # Content Parsing
     for raw_line in cam_text.strip().splitlines():
         line = raw_line.strip()
         if not line:
-            pdf.ln(3)
+            pdf.ln(4)
             continue
-        if line.startswith("####") or line.startswith("###") or line.startswith("##") or line.startswith("# "):
-            heading = line.lstrip("#").strip().replace("**", "")
+            
+        # Headers
+        if line.startswith("# "):
+            pdf.set_font("Helvetica", "B", 20)
+            pdf.set_text_color(40, 60, 120)
+            text = line[2:].replace("**", "")
+            pdf.multi_cell(0, 12, text)
+            pdf.ln(2)
+        elif line.startswith("## "):
+            pdf.set_font("Helvetica", "B", 16)
+            pdf.set_text_color(60, 80, 160)
+            text = line[3:].replace("**", "")
+            pdf.multi_cell(0, 10, text)
+            pdf.ln(2)
+        elif line.startswith("### "):
             pdf.set_font("Helvetica", "B", 13)
             pdf.set_text_color(60, 80, 160)
-            pdf.multi_cell(0, 8, heading, wrapmode="CHAR")
-            pdf.ln(2)
-        elif line == "---":
-            pdf.ln(2)
-            pdf.set_draw_color(180, 180, 180)
+            text = line[4:].replace("**", "")
+            pdf.multi_cell(0, 8, text)
+            pdf.ln(1)
+        
+        # Horizontal Rule
+        elif line == "---" or line == "***":
+            pdf.ln(3)
+            pdf.set_draw_color(220, 220, 220)
             pdf.set_line_width(0.3)
             pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
-            pdf.ln(4)
+            pdf.ln(5)
+            
+        # Lists
         elif line.startswith("- ") or line.startswith("* "):
             text = line[2:].replace("**", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
-            pdf.set_x(pdf.l_margin + 4)
-            pdf.multi_cell(0, 6, "  " + text, wrapmode="CHAR")
+            pdf.set_x(pdf.l_margin + 6)
+            pdf.multi_cell(0, 6, "• " + text)
             pdf.ln(1)
+            
+        # Tables (Simplified)
         elif line.startswith("|"):
-            text = line.replace("**", "")
-            pdf.set_font("Helvetica", "", 9)
-            pdf.set_text_color(70, 70, 70)
-            pdf.multi_cell(0, 5, text, wrapmode="CHAR")
+            if "---" in line: continue
+            text = line.replace("|", "  ").replace("**", "").strip()
+            pdf.set_font("Courier", "", 9)
+            pdf.set_text_color(80, 80, 80)
+            pdf.multi_cell(0, 6, text)
+            
+        # Standard Body Text
         else:
             text = line.replace("**", "")
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
-            pdf.multi_cell(0, 6, text, wrapmode="CHAR")
+            pdf.multi_cell(0, 6, text)
             pdf.ln(1)
 
-    return bytes(pdf.output())
+    return pdf.output()
 
 
 # ──────────────────────────────────────────────
@@ -1084,6 +1115,11 @@ def render_analysis():
         if st.button("← Back to Dashboard"):
             switch_page("dashboard")
 
+        if st.session_state.cam_generated:
+            st.markdown("---")
+            st.subheader("📑 Final CAM Report")
+            render_pdf_download_button("sidebar")
+
     # ── Main Area: Chat Interface ──
     st.markdown("<h1 class='main-title' style='font-size: 3.5rem;'>CREDI-MITRA</h1>", unsafe_allow_html=True)
     st.markdown("<p class='sub-title'>LLM-Orchestrated Credit Appraisal Console</p>", unsafe_allow_html=True)
@@ -1185,10 +1221,9 @@ def render_analysis():
 
 
 def _render_cam_extras():
-    """Render the CAM download button and explainability chart."""
+    """Render the CAM explainability chart and download button in the main chat."""
     if st.session_state.cam_content:
         import pandas as pd
-        import numpy as np
         # SHAP explainability chart
         st.subheader("📈 Model Explainability (Feature Impact)")
         features = [
@@ -1206,15 +1241,63 @@ def _render_cam_extras():
             st.bar_chart(shap_df, color="#247eea", height=400)
 
         # PDF download
-        pdf_bytes = generate_cam_pdf(st.session_state.cam_content)
-        c_name = st.session_state.get("company_name", "").strip().replace(" ", "_") or "Company"
-        a_no = st.session_state.get("app_no", "").strip().replace(" ", "_") or "App"
+        st.markdown("---")
+        render_pdf_download_button("main")
+
+
+def render_pdf_download_button(location="main"):
+    """Dedicated function to render the PDF download button with byte caching."""
+    if not st.session_state.cam_content:
+        return
+
+    # Cache PDF generation to avoid lag on every rerun
+    if "cam_pdf_bytes" not in st.session_state or st.session_state.get("last_cam_content") != st.session_state.cam_content:
+        with st.spinner("Preparing PDF report..."):
+            try:
+                pdf_data = generate_cam_pdf(st.session_state.cam_content)
+                st.session_state.cam_pdf_bytes = pdf_data
+                st.session_state.last_cam_content = st.session_state.cam_content
+                
+                # ── Robust Auto-Save to 'Report_Generated' ──
+                try:
+                    rep_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Report_Generated")
+                    os.makedirs(rep_dir, exist_ok=True)
+                    
+                    c_slug = st.session_state.get("company_name", "").strip().replace(" ", "_") or "Company"
+                    a_slug = st.session_state.get("app_no", "").strip().replace(" ", "_") or "App"
+                    f_path = os.path.join(rep_dir, f"{c_slug}_{a_slug}_CAM.pdf")
+                    
+                    with open(f_path, "wb") as f:
+                        f.write(pdf_data)
+                except Exception as save_err:
+                    st.warning(f"Note: Could not auto-save PDF to directory: {save_err}")
+            except Exception as e:
+                st.error(f"Failed to generate PDF: {e}")
+                return
+
+    pdf_bytes = st.session_state.cam_pdf_bytes
+    c_name = st.session_state.get("company_name", "").strip().replace(" ", "_") or "Company"
+    a_no = st.session_state.get("app_no", "").strip().replace(" ", "_") or "App"
+    
+    label = "📄 Download CAM (PDF)"
+    if location == "sidebar":
+        st.info("CAM report is ready for download.")
         st.download_button(
-            label="📄 Download CAM Report (PDF)",
+            label=label,
             data=pdf_bytes,
             file_name=f"{c_name}_{a_no}_CAM.pdf",
             mime="application/pdf",
-            type="primary"
+            use_container_width=True,
+            key="sidebar_download_cam"
+        )
+    else:
+        st.download_button(
+            label=label,
+            data=pdf_bytes,
+            file_name=f"{c_name}_{a_no}_CAM.pdf",
+            mime="application/pdf",
+            type="primary",
+            key="main_download_cam"
         )
 
 
